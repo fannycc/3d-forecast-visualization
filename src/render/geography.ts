@@ -76,3 +76,23 @@ export function clipSegment(segment: Segment, bounds: Bounds): Segment | null {
 
   return { source: [x + enter * dx, y + enter * dy], target: [x + exit * dx, y + exit * dy] };
 }
+
+let linework: Promise<{ rivers: Segment[]; roads: Segment[] }> | undefined;
+
+/** Natural Earth rivers and major roads, prepared by scripts/prepare-linework.mjs. */
+export function loadLinework() {
+  return (linework ??= Promise.all(
+    ['/rivers.geojson', '/roads.geojson'].map(async (url) => {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error('Rivers and roads could not be loaded.');
+      const data = (await response.json()) as { features: { geometry: Geometry }[] };
+
+      return data.features.flatMap((feature) => boundarySegments(feature.geometry));
+    }),
+  )
+    .then(([rivers, roads]) => ({ rivers, roads }))
+    .catch((error) => {
+      linework = undefined;
+      throw error;
+    }));
+}

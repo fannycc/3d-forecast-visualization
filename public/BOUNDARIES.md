@@ -9,3 +9,7 @@ These are generalized cartographic boundaries, not survey-accurate administrativ
 Place names: Natural Earth 1:10m populated places (simple), public domain. Retrieved 24 September 2026 from https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_10m_populated_places_simple.geojson. Labels are prioritized by cartographic rank and population; this is not an exhaustive settlement directory.
 
 The world overview SVG is derived from the bundled Natural Earth 1:110m country polygons using an equirectangular projection.
+
+Rivers: Natural Earth 1:10m rivers and lake centerlines plus the European supplement, public domain; lake centerlines marked intermittent are omitted. Roads: Natural Earth 1:10m roads, major and secondary highways only, public domain. Coordinates are rounded to 0.01°. Regenerate with `node scripts/prepare-linework.mjs <download-dir>`.
+
+Relief: AWS Terrain Tiles (Terrarium encoding; Mapzen, from SRTM, GMTED2010, ETOPO1 and other sources), fetched at view time and resampled to a 220 × 220 longitude/latitude grid. Heights are exaggerated by the factor printed under the cube, and the sea is drawn flat at sea level.

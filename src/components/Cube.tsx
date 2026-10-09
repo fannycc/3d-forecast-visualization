@@ -16,8 +16,11 @@ import { WorldMinimap } from './WorldMinimap';
 import { CubeController } from '../render/cube-controller';
 import { cubeProjection } from '../render/cube-projection';
 import { VolumeLayer, CUBE_SIZE, normalized } from '../render/volume-layer';
+import { normalsMatch, type DisplayVolume } from '../engine/derive';
+import type { Normals } from '../engine/types';
+import { formatValue } from '../render/value-scale';
 import type { Palette } from '../render/colors';
-import type { Extent, Volume } from '../engine/types';
+import type { Extent } from '../engine/types';
 import { coordinateDate } from '../engine/coordinates';
 import { draggedRegion } from '../render/region-drag';
 
@@ -63,8 +66,14 @@ export function Cube({
   loading,
   loadError,
   regionFailure,
+  uncertaintyMode = 'off',
+  uncertaintyScale = 1,
+  normals,
 }: {
-  volume: Volume;
+  volume: DisplayVolume;
+  uncertaintyMode?: 'off' | 'suppress' | 'hatch';
+  uncertaintyScale?: number;
+  normals?: Normals | null;
   selectionMask: Uint8Array | null;
   points: (Point & { color: string; id: string; anchor: [number, number] })[];
   slices: [number, number, number];
@@ -630,6 +639,9 @@ export function Cube({
         slices,
         range,
         palette,
+        uncertainty: volume.uncertainty,
+        uncertaintyMode,
+        uncertaintyScale,
         onReady: reportReady,
         pickable: true,
         coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
@@ -735,6 +747,8 @@ export function Cube({
       slices,
       range,
       palette,
+      uncertaintyMode,
+      uncertaintyScale,
       reportReady,
       geographicLines,
       visiblePlaceLabels,
@@ -926,13 +940,21 @@ export function Cube({
       />
       {hover && mode !== 'slice' ? (
         <div className="hover-inspector">
-          <span>
-            {volume.lon[hover.x]?.toFixed(2)}° E · {volume.lat[hover.y]?.toFixed(2)}° N
-          </span>
+          <span>{formatLatLon(volume.lat[hover.y], volume.lon[hover.x])}</span>
+          <span className="hover-quantity">{volume.quantity.label}</span>
           <b>
-            {Number.isFinite(hover.value) ? String(hover.value) : 'Missing'}{' '}
-            <small>{volume.units === 'degree_Celsius' ? '°C' : volume.units}</small>
+            {Number.isFinite(hover.value)
+              ? volume.quantity.kind === 'share'
+                ? `${Math.round(hover.value * 100)} %`
+                : formatValue(hover.value)
+              : 'Missing'}{' '}
+            {volume.quantity.kind === 'share' ? null : <small>{volume.quantity.units}</small>}
           </b>
+          {hoverDetails(volume, normals, hover).map((line) => (
+            <span key={line} className="hover-detail">
+              {line}
+            </span>
+          ))}
           <span>
             {volume.timeUnits.includes('since ')
               ? coordinateDate(volume.times[hover.t], volume.timeUnits)
@@ -944,4 +966,30 @@ export function Cube({
       ) : null}
     </div>
   );
+}
+
+function formatLatLon(lat: number, lon: number) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return '';
+
+  return `${Math.abs(lat).toFixed(2)}° ${lat < 0 ? 'S' : 'N'} · ${Math.abs(lon).toFixed(2)}° ${lon < 0 ? 'W' : 'E'}`;
+}
+
+/** Supporting numbers for one cell, always in the forecast's own units: member spread and
+ * range for ensembles, and the climatological normal when one is loaded. */
+function hoverDetails(volume: DisplayVolume, normals: Normals | null | undefined, p: Point) {
+  const i = (p.t * volume.shape[1] + p.y) * volume.shape[2] + p.x;
+  const u = volume.sourceUnits;
+  const lines: string[] = [];
+  const e = volume.ensemble;
+  if (e && Number.isFinite(e.stats.mean[i]))
+    lines.push(
+      `Members ${e.stats.valid[i]}/${e.count} · spread ± ${formatValue(e.stats.spread[i])}`,
+      `10–90 %: ${formatValue(e.stats.p10[i])} to ${formatValue(e.stats.p90[i])} ${u}`.trim(),
+    );
+  if (normalsMatch(volume, normals) && Number.isFinite(normals.mean[i]))
+    lines.push(
+      `Normal ${formatValue(normals.mean[i])} ± ${formatValue(normals.sd[i])} ${u} (n = ${normals.count[i]})`,
+    );
+
+  return lines;
 }

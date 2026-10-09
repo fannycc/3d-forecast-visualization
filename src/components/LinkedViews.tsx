@@ -12,11 +12,14 @@ export function TimeSeries({
   forecasts,
   onRemove,
   onTime,
+  units,
 }: {
   volume: Volume;
   time: number;
-  forecasts: ForecastPoint[];
+  forecasts: (ForecastPoint & { plume?: number[][] | null })[];
   onRemove: (id: string) => void;
+  /** Units of the plotted quantity, which may be an anomaly or a share. */
+  units?: string;
   onTime: (n: number) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -57,11 +60,36 @@ export function TimeSeries({
     [forecasts],
   );
 
+  /** Per-time 10th, 50th and 90th percentiles across members (type 7). */
+  const bands = useMemo(
+    () =>
+      series.map((p) =>
+        p.plume
+          ? p.values.map((_, t) => {
+              const v = p
+                .plume!.map((m) => m[t])
+                .filter(Number.isFinite)
+                .sort((a, b) => a - b);
+              const q = (f: number) => {
+                if (!v.length) return NaN;
+                const h = (v.length - 1) * f,
+                  lo = Math.floor(h);
+
+                return v[lo] + (h - lo) * ((v[Math.min(v.length - 1, lo + 1)] ?? v[lo]) - v[lo]);
+              };
+
+              return [q(0.1), q(0.5), q(0.9)];
+            })
+          : null,
+      ),
+    [series],
+  );
+
   const [min, max] = useMemo(() => {
     let low = Infinity,
       high = -Infinity;
     for (const point of series)
-      for (const value of point.values) {
+      for (const value of [...point.values, ...(point.plume?.flat() ?? [])]) {
         if (!Number.isFinite(value)) continue;
         low = Math.min(low, value);
         high = Math.max(high, value);
@@ -79,6 +107,42 @@ export function TimeSeries({
   const X = (i: number) =>
     axis.left + ((hours[i] - hours[0]) / timeSpan) * (axis.right - axis.left);
   const Y = (v: number) => height - 26 - ((v - lo) / span) * (height - 38);
+
+  const line = (values: number[]) => {
+    let path = '',
+      valid = false;
+    values.forEach((v, i) => {
+      if (!Number.isFinite(v)) {
+        valid = false;
+
+        return;
+      }
+      path += `${valid ? 'L' : 'M'}${X(i)},${Y(v)} `;
+      valid = true;
+    });
+
+    return path;
+  };
+
+  const area = (low: number[], high: number[]) => {
+    const ok = low.map((v, i) => Number.isFinite(v) && Number.isFinite(high[i]));
+    let d = '';
+    let i = 0;
+    while (i < low.length) {
+      if (!ok[i]) {
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j + 1 < low.length && ok[j + 1]) j++;
+      const top = Array.from({ length: j - i + 1 }, (_, k) => `${X(i + k)},${Y(high[i + k])}`);
+      const bottom = Array.from({ length: j - i + 1 }, (_, k) => `${X(j - k)},${Y(low[j - k])}`);
+      d += `M${top.join(' L')} L${bottom.join(' L')} Z `;
+      i = j + 1;
+    }
+
+    return d;
+  };
 
   const paths = series.map((series) => {
     let path = '',
@@ -110,7 +174,8 @@ export function TimeSeries({
         </span>
         <span>
           {timeLabel(volume.times[time], volume.timeUnits)} ·{' '}
-          {volume.units === 'degree_Celsius' ? '°C' : volume.units}
+          {units ?? (volume.units === 'degree_Celsius' ? '°C' : volume.units)}
+          {series.some((p) => p.plume) ? ' · members, 10–90 % band, median' : ''}
         </span>
       </div>
       <div className="forecast-legend">
@@ -121,7 +186,13 @@ export function TimeSeries({
               {Math.abs(p.volume.lat[0]).toFixed(2)}° {p.volume.lat[0] < 0 ? 'S' : 'N'},{' '}
               {Math.abs(p.volume.lon[0]).toFixed(2)}° {p.volume.lon[0] < 0 ? 'W' : 'E'}
             </span>
-            <strong style={{ color: p.color }}>{formatValue(p.values[time])}</strong>
+            <strong style={{ color: p.color }}>
+              {units?.startsWith('share')
+                ? Number.isFinite(p.values[time])
+                  ? `${Math.round(p.values[time] * 100)} %`
+                  : '—'
+                : formatValue(p.values[time])}
+            </strong>
             <button
               aria-label={`Remove point ${p.id}`}
               title="Remove point"
@@ -195,6 +266,23 @@ export function TimeSeries({
               </text>
             </g>
           ))}
+          {series.map((p, k) =>
+            p.plume ? (
+              <g key={`plume-${p.id}`} className="plume" style={{ color: p.color }}>
+                {p.plume.map((m, i) => (
+                  <path key={i} d={line(m)} className="plume-member" />
+                ))}
+                <path
+                  d={area(
+                    bands[k]!.map((b) => b[0]),
+                    bands[k]!.map((b) => b[2]),
+                  )}
+                  className="plume-band"
+                />
+                <path d={line(bands[k]!.map((b) => b[1]))} className="plume-median" />
+              </g>
+            ) : null,
+          )}
           {paths.map((p) => (
             <path key={p.id} d={p.path} fill="none" style={{ stroke: p.color }} strokeWidth="1.8" />
           ))}

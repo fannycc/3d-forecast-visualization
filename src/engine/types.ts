@@ -1,7 +1,9 @@
+import type { EnsembleStats } from './ensemble';
+
 /** Geographic degrees ordered west, south, east, north; west > east crosses the dateline. */
 export type Extent = [west: number, south: number, east: number, north: number];
 
-export type Axes = { x: string; y: string; t: string; init?: string };
+export type Axes = { x: string; y: string; t: string; init?: string; member?: string };
 
 export type OpenRequest = { url: string; variable?: string; axes?: Axes };
 
@@ -27,6 +29,10 @@ export type Metadata = {
   timeUnits: string;
   initializations: number[];
   initUnits: string;
+  /** Ensemble member labels; absent for single forecasts. */
+  members?: number[];
+  /** Variable attributes needed to judge comparability, such as step_type. */
+  stepType?: string;
   complete: number[];
   availability: string;
   units: string;
@@ -52,6 +58,56 @@ export type Volume = {
   missing: number;
   units: string;
   variable: string;
+  /** A statement about how the loaded volume differs from the full dataset axes. */
+  note?: string;
+  /** Present for ensemble forecasts: every member plus per-cell statistics. */
+  ensemble?: {
+    count: number;
+    labels: number[];
+    /** Member-major: members[m * cells + cell], cells in [time, y, x] order. */
+    members: Float32Array | Float64Array;
+    stats: EnsembleStats;
+  };
+};
+
+/** Climatological normals for every cell of one loaded volume. */
+export type Normals = {
+  volumeId: string;
+  mean: Float32Array;
+  sd: Float32Array;
+  count: Uint16Array;
+  provenance: {
+    source: string;
+    snapshot: string;
+    variable: string;
+    years: [number, number];
+    windowDays: number;
+    interpolatedSteps: number;
+    steps: number;
+    minSamples: number;
+    maxSamples: number;
+  };
+};
+
+export type BaselineRequest = {
+  /** Loaded forecast cells to match: coordinates and absolute valid times (epoch seconds). */
+  volumeId: string;
+  variable: string;
+  stepType?: string;
+  lon: number[];
+  lat: number[];
+  validTimes: number[];
+  years: [number, number];
+  windowDays: number;
+  /** Only estimate the reads needed; do not load any chunks. */
+  estimateOnly?: boolean;
+};
+
+export type BaselineEstimate = {
+  chunks: number;
+  /** Fewest and most archive samples behind one normal, before missing values. */
+  perNormal: [number, number];
+  archive: [string, string];
 };
 
 export type Metrics = {
@@ -74,6 +130,7 @@ export type Request =
   | { id: number; type: 'stats' }
   | { id: number; type: 'open'; options: OpenRequest }
   | { id: number; type: 'load'; variable: string; init: number; extent: Extent }
+  | ({ id: number; type: 'baseline' } & BaselineRequest)
   | { id: number; type: 'cancel'; target: number };
 
 /** Worker protocol: progress is nonterminal; every other response completes a request. */
@@ -81,5 +138,7 @@ export type Response =
   | { id: number; type: 'stats'; metrics: Metrics }
   | { id: number; type: 'metadata'; metadata: Metadata; metrics: Metrics }
   | { id: number; type: 'volume'; volume: Volume; metrics: Metrics }
+  | { id: number; type: 'normals'; normals: Normals; metrics: Metrics }
+  | { id: number; type: 'estimate'; estimate: BaselineEstimate }
   | { id: number; type: 'progress'; message: string }
   | { id: number; type: 'error'; message: string };

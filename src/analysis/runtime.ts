@@ -11,14 +11,14 @@ import {
 } from '@uwdata/mosaic-core';
 import type { Table } from '@uwdata/flechette';
 import { Query, sql, type FilterExpr } from '@uwdata/mosaic-sql';
-import type { Volume } from '../engine/types';
+import type { DisplayVolume } from '../engine/derive';
 import { forecastViewSQL } from './forecast-view';
 import type { AnalysisState } from './state';
 import { createQueryQueue } from './query-queue';
 
 /** Load dense values in bounded Arrow batches and disable external SQL access.
  * The abort signal terminates the dedicated worker, including during initialization. */
-async function createBackend(volume: Volume, signal: AbortSignal) {
+async function createBackend(volume: DisplayVolume, signal: AbortSignal) {
   const worker = new Worker(workerURL);
   const db = new AsyncDuckDB(new VoidLogger(), worker);
   const stop = () => {
@@ -43,7 +43,18 @@ async function createBackend(volume: Volume, signal: AbortSignal) {
       const ids = Int32Array.from({ length: end - start }, (_, i) => start + i);
 
       await connection.insertArrowFromIPCStream(
-        tableToIPC(tableFromArrays({ cell_id: ids, value: volume.data.slice(start, end) })),
+        tableToIPC(
+          tableFromArrays({
+            cell_id: ids,
+            value: volume.data.slice(start, end),
+            ...Object.fromEntries(
+              Object.entries(volume.columns).map(([name, data]) => [
+                name,
+                Float32Array.from(data.subarray(start, end)),
+              ]),
+            ),
+          }),
+        ),
         {
           name: 'samples',
           create: start === 0,
@@ -51,7 +62,7 @@ async function createBackend(volume: Volume, signal: AbortSignal) {
       );
     }
     check();
-    await connection.query(forecastViewSQL(volume));
+    await connection.query(forecastViewSQL(volume, Object.keys(volume.columns)));
     await connection.query('SET enable_external_access=false; SET lock_configuration=true;');
 
     return {
@@ -70,7 +81,7 @@ async function createBackend(volume: Volume, signal: AbortSignal) {
 
 /** Create a serialized Mosaic/DuckDB runtime with one recovery attempt per engine failure.
  * Call dispose when the owning volume is retired. */
-export async function createRuntime(volume: Volume, signal: AbortSignal) {
+export async function createRuntime(volume: DisplayVolume, signal: AbortSignal) {
   let backend = await createBackend(volume, signal);
 
   const query = createQueryQueue<ConnectorQueryRequest, unknown>({

@@ -34,11 +34,16 @@ import { coordinateDate, coordinateIndices, validateExtent } from './engine/coor
 import type { Extent, Metadata, Metrics, Volume, OpenRequest } from './engine/types';
 import { Cube } from './components/Cube';
 import { AnalysisControls } from './components/AnalysisControls';
-import { useMosaicState } from './analysis/state';
+import { applySQL, useMosaicState } from './analysis/state';
 import { useAnalysis } from './analysis/useAnalysis';
 import { TimeSeries } from './components/LinkedViews';
 import { Button, Dialog, Popover, Slider, Tip, TooltipProvider } from './components/ui/primitives';
 import { gradient, snowfallRange, type Palette } from './render/colors';
+import { deriveVolume, defaultDisplay, memberSeries, type Display } from './engine/derive';
+import { useNormals } from './analysis/useNormals';
+import { EnsembleControls, type UncertaintyMode } from './components/EnsembleControls';
+import { NormalsControls } from './components/NormalsControls';
+import { isAvailableForecast as isComparableForecast } from './engine/dataset-support';
 
 const DEFAULT_EXTENT: Extent = [-25, 34, 45, 72];
 
@@ -56,7 +61,11 @@ const initialExtent = (() => {
   }
 })();
 
-const prettyUnit = (u: string) => (u === 'degree_Celsius' ? '°C' : u);
+const legendValue = (v: number, kind: string) =>
+  kind === 'share' ? `${Math.round(v * 100)}` : formatValue(v);
+
+const legendUnits = (q: { kind: string; units: string }) =>
+  q.kind === 'share' ? '% of members' : q.units;
 
 const mb = (n: number) => (n / 1048576).toFixed(1) + ' MiB';
 
@@ -134,8 +143,92 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [regionFailure]);
 
+  const [display, setDisplayState] = useState<Display>(defaultDisplay),
+    [uncertaintyMode, setUncertaintyMode] = useState<UncertaintyMode>('suppress'),
+    [uncertaintyScale, setUncertaintyScale] = useState(1);
+  const normals = useNormals(meta, volume, display.reference !== 'forecast');
+
+  /** The cube, legend, SQL and point panel all read this one derived volume. */
+  const displayVolume = useMemo(
+    () => (volume ? deriveVolume(volume, display, normals.normals) : null),
+    [volume, display, normals.normals],
+  );
+
+  const setDisplay = (next: Display) => {
+    if (next.statistic === 'share' && display.statistic !== 'share' && volume)
+      next = {
+        ...next,
+        share: {
+          ...next.share,
+          threshold:
+            next.reference !== 'forecast' && normals.current
+              ? 0
+              : Number(formatValue((volume.min + volume.max) / 2)),
+        },
+      };
+    setDisplayState(next);
+  };
+
   const [analysisEnabled, setAnalysisEnabled] = useState(false);
-  const analysis = useAnalysis(volume, analysisEnabled);
+  const analysis = useAnalysis(displayVolume, analysisEnabled);
+
+  // Colour ranges are set when the shown quantity changes and then held while panning or
+  // switching runs, so colours stay comparable between regions and forecasts.
+  const rangeKey = displayVolume
+    ? [url, displayVolume.variable, displayVolume.quantity.kind, displayVolume.quantity.units].join(
+        '|',
+      )
+    : '';
+  useEffect(() => {
+    if (!displayVolume || !meta) return;
+    const q = displayVolume.quantity;
+    if (q.fixedRange) {
+      setPalette('viridis');
+      setRange([...q.fixedRange]);
+    } else if (q.kind === 'anomaly') {
+      setPalette('balance');
+      const limit =
+        q.units === 'σ'
+          ? 3
+          : valueRange(0, Math.max(Math.abs(displayVolume.min), Math.abs(displayVolume.max)))[1];
+      setRange([-limit, limit]);
+    } else if (
+      isSnowfallExample(meta.url) &&
+      ['winter_anomaly', 'event_anomaly'].includes(displayVolume.variable)
+    ) {
+      setPalette('snowfall');
+      setRange([...snowfallRange]);
+    } else {
+      const next = valueRange(displayVolume.min, displayVolume.max);
+      if (paletteRef.current === 'snowfall') {
+        const limit = Math.max(Math.abs(next[0]), Math.abs(next[1]));
+        setRange([-limit, limit]);
+      } else {
+        if (['viridis', 'balance'].includes(paletteRef.current)) setPalette('thermal');
+        setRange(next);
+      }
+    }
+  }, [rangeKey]);
+
+  // The uncertainty scale defaults to the 75th percentile of spread, rounded to one
+  // significant figure, and is then held like the colour range.
+  const scaleKey = displayVolume?.uncertainty
+    ? [url, displayVolume.variable, displayVolume.quantity.units].join('|')
+    : '';
+  useEffect(() => {
+    const u = displayVolume?.uncertainty;
+    if (!u) return;
+    const finite = Array.from(u)
+      .filter(Number.isFinite)
+      .sort((a, b) => a - b);
+    const p75 = finite[Math.floor(finite.length * 0.75)] ?? 1;
+    setUncertaintyScale(p75 > 0 ? Number(p75.toPrecision(1)) : 1);
+  }, [scaleKey]);
+
+  useEffect(() => {
+    if (displayVolume)
+      setSelectedForecasts((previous) => refreshForecastPoints(previous, displayVolume));
+  }, [displayVolume]);
 
   const renderError = useCallback((e: Error) => {
     console.error('zarr-sql-views rendering:', e);
@@ -150,85 +243,96 @@ export default function App() {
   const slicesRef = useRef(slices);
   slicesRef.current = slices;
 
-  const load = useCallback((m: Metadata, v: string, i: number, e: Extent, keepView = false) => {
-    let region: Extent;
-    try {
-      validateExtent(e);
-      region = isSnowfallExample(m.url) ? e : squareExtent(e);
-    } catch (error) {
-      if (keepView) setRegionFailure({ message: 'Cannot move to this area.' });
-      else setError((error as Error).message);
-      setBusy(false);
+  const [runNotice, setRunNotice] = useState('');
 
-      return;
-    }
-    cancel.current?.();
-    setRegionFailure(null);
-    if (
-      keepView &&
-      (!coordinateIndices(m.lon, region[0], region[2], true).length ||
-        !coordinateIndices(m.lat, region[1], region[3]).length)
-    ) {
-      setBusy(false);
-      setRegionFailure({ message: 'No data in this area.' });
+  /** fallback > 0 lets a first open step back past runs the archive holds only in part. */
+  const load = useCallback(
+    (m: Metadata, v: string, i: number, e: Extent, keepView = false, fallback = 0) => {
+      let region: Extent;
+      try {
+        validateExtent(e);
+        region = isSnowfallExample(m.url) ? e : squareExtent(e);
+      } catch (error) {
+        if (keepView) setRegionFailure({ message: 'Cannot move to this area.' });
+        else setError((error as Error).message);
+        setBusy(false);
 
-      return;
-    }
+        return;
+      }
+      cancel.current?.();
+      setRegionFailure(null);
+      if (
+        keepView &&
+        (!coordinateIndices(m.lon, region[0], region[2], true).length ||
+          !coordinateIndices(m.lat, region[1], region[3]).length)
+      ) {
+        setBusy(false);
+        setRegionFailure({ message: 'No data in this area.' });
 
-    setBusy(true);
-    if (!keepView) {
-      setVolume(null);
-      setSelectedForecasts([]);
-    }
+        return;
+      }
 
-    setError('');
-    setPlaying(false);
-    setMessage('Preparing regional selection…');
+      setBusy(true);
+      if (!keepView) {
+        setVolume(null);
+        setSelectedForecasts([]);
+      }
 
-    cancel.current = client.current!.request(
-      { type: 'load', variable: v, init: i, extent: region },
-      (r) => {
-        if (r.type === 'progress') setMessage(r.message);
-        if (r.type === 'error') {
-          if (keepView)
-            setRegionFailure({
-              message: r.message.startsWith('No source values')
-                ? 'No data in this area.'
-                : 'Could not load this area. Keep panning to try another region.',
-            });
-          else setError(r.message);
+      setError('');
+      setPlaying(false);
+      setMessage('Preparing regional selection…');
 
-          setBusy(false);
-        }
+      cancel.current = client.current!.request(
+        { type: 'load', variable: v, init: i, extent: region },
+        (r) => {
+          if (r.type === 'progress') setMessage(r.message);
+          if (r.type === 'error') {
+            if (
+              !keepView &&
+              fallback > 0 &&
+              i > 0 &&
+              /missing source data|still being ingested/.test(r.message)
+            ) {
+              setRunNotice(
+                `The ${dateLabel(m.initializations[i], m.initUnits)} run is incomplete in the archive, so an earlier run is shown.`,
+              );
+              setInit(i - 1);
+              load(m, v, i - 1, e, false, fallback - 1);
 
-        if (r.type === 'volume') {
-          setVolume(r.volume);
-          if (keepView)
-            setSelectedForecasts((previous) => refreshForecastPoints(previous, r.volume));
-          setExtent(region);
-          setMetrics(r.metrics);
-          setBusy(false);
-          if (isSnowfallExample(m.url) && ['winter_anomaly', 'event_anomaly'].includes(v)) {
-            if (!keepView) setRange([...snowfallRange]);
-          } else if (!keepView || paletteRef.current !== 'snowfall') {
-            const nextRange = valueRange(r.volume.min, r.volume.max);
-            const limit = Math.max(Math.abs(nextRange[0]), Math.abs(nextRange[1]));
-            setRange(paletteRef.current === 'snowfall' ? [-limit, limit] : nextRange);
+              return;
+            }
+            if (keepView)
+              setRegionFailure({
+                message: r.message.startsWith('No source values')
+                  ? 'No data in this area.'
+                  : 'Could not load this area. Keep panning to try another region.',
+              });
+            else setError(r.message);
+
+            setBusy(false);
           }
 
-          const shape = r.volume.shape;
-          const previousShape = loadedShape.current;
-          loadedShape.current = shape;
+          if (r.type === 'volume') {
+            setVolume(r.volume);
+            setExtent(region);
+            setMetrics(r.metrics);
+            setBusy(false);
 
-          const selected: [number, number, number] = [shape[2] - 1, 0, shape[0] - 1];
-          setSlices((previous) =>
-            keepView && previousShape ? remapSlices(previous, previousShape, shape) : selected,
-          );
-          setMeta({ ...m, variable: v, units: r.volume.units });
-        }
-      },
-    );
-  }, []);
+            const shape = r.volume.shape;
+            const previousShape = loadedShape.current;
+            loadedShape.current = shape;
+
+            const selected: [number, number, number] = [shape[2] - 1, 0, shape[0] - 1];
+            setSlices((previous) =>
+              keepView && previousShape ? remapSlices(previous, previousShape, shape) : selected,
+            );
+            setMeta({ ...m, variable: v, units: r.volume.units });
+          }
+        },
+      );
+    },
+    [],
+  );
 
   const openStore = useCallback(
     (options: OpenRequest, requestedExtent: Extent = DEFAULT_EXTENT) => {
@@ -241,6 +345,7 @@ export default function App() {
       setVolume(null);
       setSelectedForecasts([]);
       setMeta(null);
+      setDisplayState(defaultDisplay);
       setBusy(true);
       setError('');
       setPlaying(false);
@@ -279,7 +384,15 @@ export default function App() {
           try {
             const region = initialRegion(r.metadata, requestedExtent);
             setExtent(region);
-            load(r.metadata, r.metadata.variable, index, region);
+            setRunNotice('');
+            load(
+              r.metadata,
+              r.metadata.variable,
+              index,
+              region,
+              false,
+              initialParams.has('init') ? 0 : 3,
+            );
           } catch (error) {
             setError((error as Error).message);
             setBusy(false);
@@ -442,6 +555,29 @@ export default function App() {
     [meta?.initializations, meta?.initUnits],
   );
 
+  /** An applied SQL filter draws only matching cells; say why the cube is empty. */
+  const filterNotice = !analysis.matches
+    ? ''
+    : analysis.error
+      ? `The SQL filter failed, so no cells are drawn: ${analysis.error}`
+      : analysis.status || analysis.runtime?.volume !== displayVolume
+        ? 'Applying the SQL filter to this view…'
+        : analysis.matches.count === 0
+          ? 'No cells match the SQL filter in this view, so the cube is empty.'
+          : '';
+
+  const plotted = useMemo(
+    () =>
+      displayVolume
+        ? selectedForecasts.map((p) => {
+            const { x, y } = anchoredCell(p, displayVolume);
+
+            return { ...p, plume: memberSeries(displayVolume, display, normals.normals, x, y) };
+          })
+        : [],
+    [selectedForecasts, displayVolume, display, normals.normals],
+  );
+
   const selectedCells = useMemo(
     () =>
       volume
@@ -600,19 +736,51 @@ export default function App() {
                             value={init}
                             disabled={!meta || busy}
                             onChange={(i) => {
+                              setRunNotice('');
                               setInit(i);
                               if (meta) load(meta, variable, i, extent);
                             }}
                           />
                         </>
                       )}
+                      {runNotice && <p className="field-note run-note">{runNotice}</p>}
+                      {volume?.note && <p className="field-note run-note">{volume.note}</p>}
                     </div>
-                    {volume ? (
+                    {displayVolume?.ensemble && (
+                      <EnsembleControls
+                        volume={displayVolume}
+                        display={display}
+                        onDisplay={setDisplay}
+                        mode={uncertaintyMode}
+                        onMode={setUncertaintyMode}
+                        scale={uncertaintyScale}
+                        onScale={setUncertaintyScale}
+                        palette={palette}
+                        range={range}
+                        normalsReady={normals.current}
+                      />
+                    )}
+                    {displayVolume && meta && (
+                      <NormalsControls
+                        handle={normals}
+                        reference={display.reference}
+                        onReference={(reference) => setDisplay({ ...display, reference })}
+                        units={displayVolume.sourceUnits}
+                        canCompare={!!meta.axes.init && isComparableForecast(meta.url)}
+                        unavailableReason="Normals are available for the GFS, GEFS and ECMWF IFS ENS forecasts, which share the 0.25° grid of the NOAA GEFS analysis archive."
+                      />
+                    )}
+                    {displayVolume ? (
                       <div className="control-section">
                         {' '}
                         <div className="legend">
                           <div>
-                            <span>Color scale</span>
+                            <span>
+                              Color scale
+                              <small className="legend-quantity">
+                                {displayVolume.quantity.label}
+                              </small>
+                            </span>
                             <Popover
                               trigger={
                                 <Button
@@ -645,6 +813,8 @@ export default function App() {
                                   <option value="snowfall">
                                     Snowfall anomaly (brown–white–blue)
                                   </option>
+                                  <option value="balance">Diverging (blue–white–red)</option>
+                                  <option value="viridis">Viridis</option>
                                   <option value="thermal">Thermal</option>
                                   <option value="ocean">Ocean</option>
                                   <option value="ember">Ember</option>
@@ -687,21 +857,25 @@ export default function App() {
                           <div className="color-bar" style={{ background: gradient(palette) }} />
                           <div className="legend-numbers">
                             <span>
-                              {volume!.min < range[0] ? '≤ ' : ''}
-                              {formatValue(range[0])} {prettyUnit(volume!.units)}
+                              {displayVolume.min < range[0] ? '≤ ' : ''}
+                              {legendValue(range[0], displayVolume.quantity.kind)}{' '}
+                              {legendUnits(displayVolume.quantity)}
                             </span>
-                            <span>{formatValue((range[0] + range[1]) / 2)}</span>
                             <span>
-                              {volume!.max > range[1] ? '≥ ' : ''}
-                              {formatValue(range[1])} {prettyUnit(volume!.units)}
+                              {legendValue((range[0] + range[1]) / 2, displayVolume.quantity.kind)}
+                            </span>
+                            <span>
+                              {displayVolume.max > range[1] ? '≥ ' : ''}
+                              {legendValue(range[1], displayVolume.quantity.kind)}{' '}
+                              {legendUnits(displayVolume.quantity)}
                             </span>
                           </div>
                         </div>
                       </div>
                     ) : null}
-                    {volume && (
+                    {displayVolume && (
                       <AnalysisControls
-                        volume={volume}
+                        volume={displayVolume}
                         analysis={analysis}
                         slices={slices}
                         onReveal={updateSlices}
@@ -720,13 +894,30 @@ export default function App() {
             {meta && <Separator className="sidebar-resizer" />}
             <Panel minSize="150px">
               <main className="main-view">
-                {volume ? (
+                {displayVolume ? (
                   <Group orientation="vertical" className="viewer-panels">
                     <Panel defaultSize={linked ? '70%' : '100%'} minSize="35%">
                       <div className="visualization">
+                        {filterNotice && (
+                          <div className="filter-notice" role="status">
+                            <p>{filterNotice}</p>
+                            {!analysis.status && (
+                              <Button onClick={() => applySQL(analysis.state, null)}>
+                                Clear SQL filter
+                              </Button>
+                            )}
+                          </div>
+                        )}
                         <Cube
                           selectionMask={analysis.matches?.mask ?? null}
-                          volume={volume}
+                          volume={displayVolume}
+                          uncertaintyMode={
+                            display.statistic === 'mean' || display.statistic === 'median'
+                              ? uncertaintyMode
+                              : 'off'
+                          }
+                          uncertaintyScale={uncertaintyScale}
+                          normals={normals.current ? normals.normals : null}
                           points={selectedCells}
                           slices={slices}
                           onSlices={updateSlices}
@@ -739,7 +930,7 @@ export default function App() {
                           onReset={resetCube}
                           onPoint={(p) => {
                             setSelectedForecasts((previous) =>
-                              addForecastPoint(previous, volume, p.x, p.y),
+                              addForecastPoint(previous, displayVolume, p.x, p.y),
                             );
                             setLinked(true);
                             changeSlice(2, p.t);
@@ -764,8 +955,13 @@ export default function App() {
                         <Separator className="panel-separator" />
                         <Panel defaultSize="30%" minSize="23%" maxSize="48%">
                           <TimeSeries
-                            volume={volume}
-                            forecasts={selectedForecasts}
+                            volume={displayVolume}
+                            forecasts={plotted}
+                            units={
+                              displayVolume.quantity.kind === 'share'
+                                ? 'share of members (0–1)'
+                                : displayVolume.quantity.units
+                            }
                             onRemove={(id) => {
                               setSelectedForecasts((previous) =>
                                 previous.filter((p) => p.id !== id),

@@ -1,4 +1,9 @@
-import { MAX_VOLUME_BYTES, MAX_SELECTION_CHUNKS } from './load-budget';
+import {
+  MAX_VOLUME_BYTES,
+  MAX_SELECTION_CHUNKS,
+  MAX_ENSEMBLE_BYTES,
+  MAX_ENSEMBLE_CHUNKS,
+} from './load-budget';
 import { regionGrid } from './region-grid';
 import { coordinateIndices, planChunks, wrapLongitude } from './coordinates';
 import type { Extent, Metadata } from './types';
@@ -56,12 +61,14 @@ export function initialRegion(meta: Metadata, requested: Extent): Extent {
       ),
     );
 
+  const members = meta.axes.member ? (meta.members?.length ?? 1) : 1;
+  const byteLimit = meta.axes.member ? MAX_ENSEMBLE_BYTES : MAX_VOLUME_BYTES;
+  const chunkLimit = meta.axes.member ? MAX_ENSEMBLE_CHUNKS : MAX_SELECTION_CHUNKS;
+  const bytes = (cells: number) =>
+    cells * meta.times.length * members * (meta.dtype === 'float64' ? 8 : 4);
+
   const fits = () => {
-    if (
-      x.length * y.length * meta.times.length * (meta.dtype === 'float64' ? 8 : 4) >
-      MAX_VOLUME_BYTES
-    )
-      return false;
+    if (bytes(x.length * y.length) > byteLimit) return false;
 
     const indices = meta.dimensions.map((d) =>
       d === meta.axes.x
@@ -70,10 +77,12 @@ export function initialRegion(meta: Metadata, requested: Extent): Extent {
           ? y
           : d === meta.axes.t
             ? (meta.timeIndices ?? meta.times.map((_, i) => i))
-            : [0],
+            : d === meta.axes.member
+              ? Array.from({ length: members }, (_, i) => i)
+              : [0],
     );
 
-    return planChunks(meta.shape, meta.chunks, indices).length <= MAX_SELECTION_CHUNKS;
+    return planChunks(meta.shape, meta.chunks, indices).length <= chunkLimit;
   };
 
   while (!fits() && (x.length > 2 || y.length > 2)) {
@@ -82,7 +91,7 @@ export function initialRegion(meta: Metadata, requested: Extent): Extent {
   }
   if (!fits())
     throw Error(
-      `The time selection alone exceeds the ${MAX_SELECTION_CHUNKS}-chunk loading budget. A smaller geographic region cannot reduce it; choose a materialized dataset.`,
+      `The time selection alone exceeds the ${chunkLimit}-chunk loading budget. A smaller geographic region cannot reduce it; choose a materialized dataset.`,
     );
 
   if (!x.length || y.length < 2)
@@ -91,8 +100,7 @@ export function initialRegion(meta: Metadata, requested: Extent): Extent {
   if (x.length === pickedX.size && y.length === pickedY.size) {
     const width = regionGrid(meta.lon, requested[0], requested[2], true).indices.length;
     const height = regionGrid(meta.lat, requested[1], requested[3]).indices.length;
-    if (width * height * meta.times.length * (meta.dtype === 'float64' ? 8 : 4) <= MAX_VOLUME_BYTES)
-      return requested;
+    if (bytes(width * height) <= byteLimit) return requested;
   }
 
   return [

@@ -31,6 +31,7 @@ export class DataClient {
     request:
       | Omit<Extract<Request, { type: 'open' }>, 'id'>
       | Omit<Extract<Request, { type: 'load' }>, 'id'>
+      | Omit<Extract<Request, { type: 'baseline' }>, 'id'>
       | { type: 'stats' },
     callback: (r: Response) => void,
   ) {

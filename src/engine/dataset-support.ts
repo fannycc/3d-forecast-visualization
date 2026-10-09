@@ -1,6 +1,14 @@
 import { dynamicalCatalogUrl, dynamicalDatasetId } from './config';
 
-const availableForecasts = new Set(['ecmwf-aifs-single-forecast', 'noaa-gfs-forecast']);
+const availableForecasts = new Set([
+  'ecmwf-aifs-single-forecast',
+  'noaa-gfs-forecast',
+  'noaa-gefs-forecast-35-day',
+  'ecmwf-ifs-ens-forecast-15-day-0-25-degree',
+]);
+
+/** Archive used to build normals: same 0.25° grid as the GFS/GEFS/IFS forecasts above. */
+export const BASELINE_ARCHIVE = 'noaa-gefs-analysis';
 
 export function isAvailableForecast(url: string): boolean {
   const parsed = new URL(url);
@@ -47,13 +55,17 @@ const checked = new Set([
   'nasa-imerg-analysis-late',
 ]);
 
-const ensemble = new Set([
+/** Ensembles whose member-retaining loads have been checked. */
+const ensembleChecked = new Set([
   'noaa-gefs-forecast-35-day',
+  'ecmwf-ifs-ens-forecast-15-day-0-25-degree',
+]);
+
+const ensemble = new Set([
   'noaa-gefs-forecast-10-day-0-25-degree-virtual',
   'noaa-gefs-forecast-16-day-0-5-degree-virtual',
   'noaa-gefs-forecast-35-day-0-5-degree-virtual',
   'ecmwf-aifs-ens-forecast',
-  'ecmwf-ifs-ens-forecast-15-day-0-25-degree',
   'ecmwf-ifs-ens-forecast-46-day-daily-1-5-degree',
   'ecmwf-ifs-ens-forecast-46-day-6-hourly-1-5-degree',
 ]);
@@ -82,8 +94,10 @@ export function catalogSupport(
   const id = dynamicalDatasetId(parsed);
   if (!id) return null;
   if (checked.has(id)) return { note: 'Sample load verified', disabled: false, rank: 0 };
+  if (ensembleChecked.has(id))
+    return { note: 'Ensemble · all members kept', disabled: false, rank: 0 };
   if (ensemble.has(id))
-    return { note: 'Ensemble member selection not supported yet', disabled: true, rank: 2 };
+    return { note: 'This ensemble layout has not been checked yet', disabled: true, rank: 2 };
   if (projected.has(id))
     return { note: 'Projected grid not supported yet', disabled: true, rank: 2 };
   if (id === 'eccc-hrdps-forecast')

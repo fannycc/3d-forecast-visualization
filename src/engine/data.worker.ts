@@ -1,4 +1,13 @@
-import { MAX_VOLUME_BYTES, MAX_SELECTION_CHUNKS } from './load-budget';
+import {
+  MAX_VOLUME_BYTES,
+  MAX_SELECTION_CHUNKS,
+  MAX_ENSEMBLE_BYTES,
+  MAX_ENSEMBLE_CHUNKS,
+  MAX_BASELINE_CHUNKS,
+} from './load-budget';
+import { ensembleStats } from './ensemble';
+import { scatter } from './scatter';
+import { BaselineAccumulator, planBaseline } from './baseline';
 import { regionGrid } from './region-grid';
 import { exampleOptions, isSnowfallExample, snowfallExample } from './examples';
 import { resolveAxes, variableDetails } from './datacube';
@@ -7,9 +16,24 @@ import { timeWindow, windowTimeCoordinates } from './time-window';
 import { forecastStart } from './forecast-coverage';
 import * as z from 'zarrita';
 import { BudgetCache, Scheduler, chunkKey } from './cache';
-import { planChunks, sourceOffset, validateExtent, unitSeconds } from './coordinates';
+import {
+  planChunks,
+  validateExtent,
+  unitSeconds,
+  wrapLongitude,
+  coordinateDate,
+} from './coordinates';
 import { resolveStore } from './resolve';
-import type { Metadata, Metrics, OpenRequest, Request, Response, Volume, Extent } from './types';
+import type {
+  BaselineRequest,
+  Metadata,
+  Metrics,
+  OpenRequest,
+  Request,
+  Response,
+  Volume,
+  Extent,
+} from './types';
 import type { Readable, AbsolutePath, RangeQuery } from '@zarrita/storage';
 
 const MB = 1024 * 1024;
@@ -237,26 +261,20 @@ async function open(options: OpenRequest, id: number) {
   if (!variable)
     throw Error('This store cannot list arrays. Enter an explicit array path under Advanced.');
   const a = await array(variable);
-  if (
-    (a.dimensionNames || (a.attrs._ARRAY_DIMENSIONS as string[]) || []).includes('ensemble_member')
-  )
+  if (a.shape.length < 3 || a.shape.length > 5)
     throw Error(
-      'This dataset contains ensemble members. Ensemble member selection is not supported yet; choose a single-forecast or analysis dataset.',
-    );
-
-  if (a.shape.length < 3 || a.shape.length > 4)
-    throw Error(
-      'Supported arrays have three axes, optionally plus one initialization axis. Select an explicit 3D/4D array.',
+      'Supported arrays have longitude, latitude and time axes, optionally plus initialization and ensemble member axes.',
     );
 
   const dimensions = a.dimensionNames || (a.attrs._ARRAY_DIMENSIONS as string[]);
   const axes = resolveAxes(dimensions, resolved.cube, variable, options.axes);
 
-  const [x, y, t, init] = await Promise.all([
+  const [x, y, t, init, member] = await Promise.all([
     coord(axes.x),
     coord(axes.y),
     coord(axes.t, !axes.init),
     axes.init ? coord(axes.init) : Promise.resolve({ values: [0], units: '' }),
+    axes.member ? coord(axes.member) : Promise.resolve(null),
   ]);
 
   for (const [name, c] of [
@@ -271,15 +289,21 @@ async function open(options: OpenRequest, id: number) {
   let complete: number[] = [];
   let availability =
     'Availability metadata unavailable; each regional block is verified across all lead times.';
-  if (names.includes('ingested_forecast_length')) {
-    const av = await coord('ingested_forecast_length');
-    const max = Math.max(...t.values) * unitSeconds(t.units);
-    complete = av.values.flatMap((v, i) =>
-      Number.isFinite(v) && v * unitSeconds(av.units) >= max ? [i] : [],
-    );
-    if (complete.length)
-      availability =
-        'Forecast length verified from ingestion metadata; regional values checked on load.';
+  if (axes.init) {
+    lengths.clear();
+    const [ingested, expected] = await Promise.all([
+      runLengths('ingested_forecast_length', axes.init),
+      runLengths('expected_forecast_length', axes.init),
+    ]);
+    if (ingested) {
+      const max = Math.max(...t.values) * unitSeconds(t.units);
+      complete = ingested.flatMap((v, i) =>
+        Number.isFinite(v) && v >= Math.min(max, expected?.[i] ?? max) - 1e-6 ? [i] : [],
+      );
+      if (complete.length)
+        availability =
+          'Run lengths verified from ingestion metadata; regional values checked on load.';
+    }
   }
 
   if (t.values.some((v, i) => i > 0 && v <= t.values[i - 1]))
@@ -374,6 +398,8 @@ async function open(options: OpenRequest, id: number) {
     timeUnits: time.units,
     initializations: init.values,
     initUnits: init.units,
+    ...(member ? { members: member.values } : {}),
+    stepType: a.attrs.step_type === undefined ? undefined : String(a.attrs.step_type),
     complete,
     availability,
     units: variableDetails(resolved.cube, variable, a.attrs).units,
@@ -412,6 +438,49 @@ async function chunk(a: z.Array<z.DataType>, coords: number[], signal: AbortSign
   );
 }
 
+const lengths = new Map<string, Promise<number[] | null>>();
+
+/** Recorded run lengths in seconds per initialization, from dataset metadata; NaN where a
+ * run is not recorded yet. Ensemble rows take the shortest member, so a length covers every
+ * member. Null when the array does not exist or is not indexed by initialization. */
+function runLengths(name: string, initAxis: string) {
+  let pending = lengths.get(name);
+  if (!pending) {
+    pending = (async () => {
+      try {
+        const a = await array(name);
+        const dims = a.dimensionNames || (a.attrs._ARRAY_DIMENSIONS as string[] | undefined);
+        if (!dims || dims[0] !== initAxis || a.shape[0] > 100000) return null;
+        const { data } = await z.get(
+          a,
+          dims.map(() => null),
+        );
+        const values = Array.from(data as ArrayLike<number | bigint>, Number);
+        const per = values.length / a.shape[0];
+        const scale = unitSeconds(String(a.attrs.units || 'seconds'));
+
+        const result = Array.from({ length: a.shape[0] }, (_, i) => {
+          let min = Infinity;
+          for (let j = 0; j < per; j++) {
+            const v = values[i * per + j];
+            min = Number.isFinite(v) && v >= 0 && v < 2 ** 52 ? Math.min(min, v) : -Infinity;
+          }
+
+          return Number.isFinite(min) ? min * scale : NaN;
+        });
+
+        // Some stores declare the array but never fill it; that says nothing about runs.
+        return result.some(Number.isFinite) ? result : null;
+      } catch {
+        return null;
+      }
+    })();
+    lengths.set(name, pending);
+  }
+
+  return pending;
+}
+
 async function load(
   variable: string,
   init: number,
@@ -431,12 +500,47 @@ async function load(
   const latitude = regionGrid(metadata.lat, extent[1], extent[3]);
   const x = longitude.indices;
   const y = latitude.indices;
-  const t = metadata.timeIndices ?? metadata.times.map((_, i) => i);
+  let t = metadata.timeIndices ?? metadata.times.map((_, i) => i);
+  let times = metadata.times;
+  let note: string | undefined;
+  if (axes.init) {
+    const [ingested, expected] = await Promise.all([
+      runLengths('ingested_forecast_length', axes.init),
+      runLengths('expected_forecast_length', axes.init),
+    ]);
+    const leadSeconds = unitSeconds(metadata.timeUnits);
+    const recorded = ingested?.[init];
+    const planned = expected?.[init];
+    if (ingested && !Number.isFinite(recorded))
+      throw Error(
+        'This run is still being ingested: its ingested_forecast_length is not recorded yet. Choose an earlier run.',
+      );
+    const reach = Math.min(
+      Number.isFinite(recorded) ? recorded! : Infinity,
+      Number.isFinite(planned) ? planned! : Infinity,
+    );
+    if (Number.isFinite(reach) && metadata.times.at(-1)! * leadSeconds > reach + 1e-6) {
+      const keep = metadata.times.filter((v) => v * leadSeconds <= reach + 1e-6).length;
+      if (keep < 2)
+        throw Error(`This run has no recorded data beyond +${reach / 3600} h. Choose another run.`);
+      t = t.slice(0, keep);
+      times = times.slice(0, keep);
+      note = `This run reaches +${reach / 3600} h (${
+        reach === recorded ? 'ingested' : 'expected'
+      }_forecast_length); later lead times are not part of it.`;
+    }
+  }
+  const memberCount = axes.member ? (metadata.members?.length ?? 0) : 1;
   if (!x.some((i) => i >= 0) || !y.some((i) => i >= 0))
     throw Error('This region contains no coordinate samples. Choose an extent inside the dataset.');
-  const count = x.length * y.length * t.length;
+  const cells = x.length * y.length * t.length;
+  const count = cells * memberCount;
   const width = a.dtype === 'float64' ? 8 : 4;
-  if (count * width > MAX_VOLUME_BYTES)
+  if (axes.member && count * width > MAX_ENSEMBLE_BYTES)
+    throw Error(
+      `Keeping all ${memberCount} members of this selection exceeds the ${MAX_ENSEMBLE_BYTES / MB} MiB ensemble budget. Choose a smaller region.`,
+    );
+  if (!axes.member && count * width > MAX_VOLUME_BYTES)
     throw Error(
       'This selection exceeds the 64 MiB volume budget. Choose a smaller region; source chunk transfer may remain larger.',
     );
@@ -444,6 +548,7 @@ async function load(
   if (!Number.isInteger(init) || init < 0 || init >= metadata.initializations.length)
     throw Error('Initialization is outside available coordinates.');
 
+  const members = Array.from({ length: memberCount }, (_, i) => i);
   const indices = dims.map((d) =>
     d === axes.x
       ? x.filter((i) => i >= 0)
@@ -451,78 +556,85 @@ async function load(
         ? y.filter((i) => i >= 0)
         : d === axes.t
           ? t
-          : [init],
+          : d === axes.member
+            ? members
+            : [init],
   );
 
+  const limit = axes.member ? MAX_ENSEMBLE_CHUNKS : MAX_SELECTION_CHUNKS;
   const planned = planChunks(a.shape, a.chunks, indices);
-  if (planned.length > MAX_SELECTION_CHUNKS)
-    throw Error(
-      `This selection spans more than ${MAX_SELECTION_CHUNKS} chunks. Choose a smaller region.`,
-    );
+  if (planned.length > limit)
+    throw Error(`This selection spans more than ${limit} chunks. Choose a smaller region.`);
 
   send({
     id,
     type: 'progress',
-    message: `Reading ${planned.length} source ${planned.length === 1 ? 'block' : 'blocks'} · checking all ${t.length} time steps…`,
+    message: `Reading ${planned.length} source ${planned.length === 1 ? 'block' : 'blocks'} · checking all ${t.length} time steps${axes.member ? ` × ${memberCount} members` : ''}…`,
   });
 
   const data = a.dtype === 'float64' ? new Float64Array(count) : new Float32Array(count);
   data.fill(NaN);
-  const axisX = dims.indexOf(axes.x),
-    axisY = dims.indexOf(axes.y),
-    axisT = dims.indexOf(axes.t);
+  const plane = x.length * y.length;
+  const selections = dims.map((d): [number, number][] =>
+    d === axes.x
+      ? x.flatMap((source, i) => (source >= 0 ? [[source, i]] : []))
+      : d === axes.y
+        ? y.flatMap((source, i) => (source >= 0 ? [[source, i * x.length]] : []))
+        : d === axes.t
+          ? t.map((source, i) => [source, i * plane])
+          : d === axes.member
+            ? members.map((m) => [m, m * cells])
+            : [[init, 0]],
+  );
   let finished = 0;
 
   await Promise.all(
     planned.map(async (coords) => {
       const c = await chunk(a, coords, signal);
       if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
-
-      const xs = x.flatMap((n, i) =>
-          Math.floor(n / a.chunks[axisX]) === coords[axisX] ? [i] : [],
-        ),
-        ys = y.flatMap((n, i) => (Math.floor(n / a.chunks[axisY]) === coords[axisY] ? [i] : [])),
-        ts = t.flatMap((source, local) =>
-          Math.floor(source / a.chunks[axisT]) === coords[axisT] ? [{ source, local }] : [],
-        );
-
-      for (const ti of ts)
-        for (const yi of ys)
-          for (const xi of xs) {
-            const source = dims.map((d) =>
-              d === axes.x ? x[xi] : d === axes.y ? y[yi] : d === axes.t ? ti.source : init,
-            );
-            const v = Number(
-              (c.data as ArrayLike<number>)[sourceOffset(source, coords, a.chunks, c.stride)],
-            );
-            data[(ti.local * y.length + yi) * x.length + xi] = v === a.fillValue ? NaN : v;
-          }
+      scatter(c, coords, a.chunks, selections, a.fillValue, (o, v) => (data[o] = v));
       send({ id, type: 'progress', message: `Loaded ${++finished} of ${planned.length} blocks…` });
     }),
   );
 
-  let min = Infinity,
-    max = -Infinity,
-    missing = 0;
   const coverage = new Uint32Array(t.length);
-  for (let i = 0; i < data.length; i++) {
-    const v = data[i];
-    if (Number.isFinite(v)) {
-      min = Math.min(min, v);
-      max = Math.max(max, v);
-      coverage[Math.floor(i / (x.length * y.length))]++;
-    } else missing++;
-  }
-  if (!Number.isFinite(min))
+  let any = false;
+  for (let i = 0; i < data.length; i++)
+    if (Number.isFinite(data[i])) {
+      coverage[Math.floor((i % cells) / plane)]++;
+      any = true;
+    }
+  if (!any)
     throw Error(
       'No source values exist for this initialization and region. Choose an earlier initialization.',
     );
 
-  const startStep = axes.init ? forecastStart(coverage, metadata.times, a.attrs) : 0;
+  const startStep = axes.init ? forecastStart(coverage, times, a.attrs) : 0;
+  const kept = cells - startStep * plane;
+  const trimmed =
+    startStep === 0
+      ? data
+      : (() => {
+          const out = new (data.constructor as Float32ArrayConstructor)(kept * memberCount);
+          for (let m = 0; m < memberCount; m++)
+            out.set(data.subarray(m * cells + startStep * plane, (m + 1) * cells), m * kept);
 
-  const loadedData = startStep ? data.slice(startStep * x.length * y.length) : data;
-  const loadedTimes = metadata.times.slice(startStep);
-  missing -= startStep * x.length * y.length;
+          return out;
+        })();
+
+  const stats = axes.member ? ensembleStats(trimmed, memberCount, kept) : null;
+  const loadedData = stats ? stats.mean : trimmed;
+  let min = Infinity,
+    max = -Infinity,
+    missing = 0;
+  for (let i = 0; i < loadedData.length; i++) {
+    const v = loadedData[i];
+    if (Number.isFinite(v)) {
+      min = Math.min(min, v);
+      max = Math.max(max, v);
+    } else missing++;
+  }
+  const loadedTimes = times.slice(startStep);
 
   const volume: Volume = {
     id: chunkKey(metadata.storeUrl, metadata.snapshot, variable, [init, ...extent]),
@@ -547,10 +659,184 @@ async function load(
       a.attrs.units || metadata.variables.find((v) => v.name === variable)?.units || '',
     ),
     variable,
+    ...(note ? { note } : {}),
+    ...(stats
+      ? {
+          ensemble: {
+            count: memberCount,
+            labels: metadata.members ?? members,
+            members: trimmed,
+            stats,
+          },
+        }
+      : {}),
   };
 
   metrics.loadMs = performance.now() - start;
-  send({ id, type: 'volume', volume, metrics: report() }, [loadedData.buffer as ArrayBuffer]);
+  const transfer = [loadedData.buffer as ArrayBuffer];
+  if (stats)
+    transfer.push(
+      trimmed.buffer as ArrayBuffer,
+      ...[stats.spread, stats.p10, stats.median, stats.p90, stats.valid].map(
+        (b) => b.buffer as ArrayBuffer,
+      ),
+    );
+  send({ id, type: 'volume', volume, metrics: report() }, transfer);
+}
+
+/** Convert a CF time coordinate to epoch seconds. */
+function epochSeconds(values: number[], units: string) {
+  if (!units.includes('since ')) throw Error('The archive time axis has no reference epoch.');
+  const origin = Date.parse(coordinateDate(0, units)) / 1000;
+
+  return values.map((v) => origin + v * unitSeconds(units));
+}
+
+/** Build per-cell normals for a loaded forecast from this worker's analysis archive. */
+async function baseline(request: BaselineRequest, id: number, signal: AbortSignal) {
+  const start = performance.now();
+  const { axes } = metadata;
+  if (axes.init || axes.member)
+    throw Error('A baseline archive must be an analysis dataset with a single time axis.');
+  if (!metadata.variables.some((v) => v.name === request.variable))
+    throw Error(`The baseline archive has no ${request.variable} variable.`);
+  const a = await array(request.variable);
+  if (!a.is('number')) throw Error('The baseline variable is not numeric.');
+  const stepTypes = [request.stepType, a.attrs.step_type].map((v) =>
+    v === undefined ? 'instant' : String(v),
+  );
+  if (stepTypes.some((v) => v !== 'instant'))
+    throw Error(
+      `Normals are only built for instantaneous variables; ${request.variable} is ${stepTypes.find((v) => v !== 'instant')}, and its averaging period differs between datasets.`,
+    );
+  const units = String(a.attrs.units || '');
+
+  const full = await coord(axes.t, false);
+  const archive = epochSeconds(full.values, full.units);
+  const plan = planBaseline(request.validTimes, archive, {
+    years: request.years,
+    windowDays: request.windowDays,
+  });
+
+  /** Exact coordinate matches; -1 only where the forecast lies outside the archive grid. */
+  const match = (wanted: number[], source: number[], longitude: boolean) => {
+    const lo = Math.min(...source),
+      hi = Math.max(...source);
+    const global = longitude && (hi - lo) * (1 + 1 / (source.length - 1)) >= 359.999;
+
+    return wanted.map((w) => {
+      const i = source.findIndex((s) => Math.abs(longitude ? wrapLongitude(s - w) : s - w) < 1e-4);
+      const inside =
+        global ||
+        ((longitude ? wrapLongitude(w) : w) >= lo && (longitude ? wrapLongitude(w) : w) <= hi);
+      if (i < 0 && inside)
+        throw Error(
+          'The forecast and baseline grids differ. Normals are not regridded, because interpolation would add error.',
+        );
+
+      return i;
+    });
+  };
+  const xs = match(request.lon, metadata.lon, true);
+  const ys = match(request.lat, metadata.lat, false);
+
+  const times = [...plan.contributions.keys()].sort((p, q) => p - q);
+  const dims = a.dimensionNames || (a.attrs._ARRAY_DIMENSIONS as string[]);
+  const indices = dims.map((d) =>
+    d === axes.x ? xs.filter((i) => i >= 0) : d === axes.y ? ys.filter((i) => i >= 0) : times,
+  );
+  const planned = planChunks(a.shape, a.chunks, indices);
+  if (request.estimateOnly) {
+    send({
+      id,
+      type: 'estimate',
+      estimate: {
+        chunks: planned.length,
+        perNormal: [Math.min(...plan.expected), Math.max(...plan.expected)],
+        archive: [
+          new Date(archive[0] * 1000).toISOString(),
+          new Date(archive.at(-1)! * 1000).toISOString(),
+        ],
+      },
+    });
+
+    return;
+  }
+  if (planned.length > MAX_BASELINE_CHUNKS)
+    throw Error(
+      `This baseline needs ${planned.length} chunk reads, above the ${MAX_BASELINE_CHUNKS}-read limit. Choose fewer years or a smaller region.`,
+    );
+
+  const nx = request.lon.length,
+    ny = request.lat.length,
+    plane = nx * ny;
+  const acc = new BaselineAccumulator(plan.targets.length, plane);
+  const contributions = plan.contributions;
+  // Output offsets encode the forecast cell; time entries carry the archive index so the
+  // writer can look up which targets the sample contributes to.
+  const selections = dims.map((d): [number, number][] =>
+    d === axes.x
+      ? xs.flatMap((source, i) => (source >= 0 ? [[source, i]] : []))
+      : d === axes.y
+        ? ys.flatMap((source, i) => (source >= 0 ? [[source, i * nx]] : []))
+        : times.map((source) => [source, source * plane]),
+  );
+  let finished = 0;
+  const queue = [...planned];
+  const workers = Array.from({ length: 4 }, async () => {
+    while (queue.length) {
+      const coords = queue.shift()!;
+      const c = await chunk(a, coords, signal);
+      if (signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+      scatter(c, coords, a.chunks, selections, a.fillValue, (o, v) => {
+        const sample = Math.floor(o / plane),
+          cell = o - sample * plane;
+        for (const k of contributions.get(sample)!) acc.add(k, cell, v);
+      });
+      // Baseline chunks are read once; keep the decoded cache for the forecast.
+      decoded.clear();
+      send({
+        id,
+        type: 'progress',
+        message: `Building normals: ${++finished} of ${planned.length} archive blocks…`,
+      });
+    }
+  });
+  await Promise.all(workers);
+
+  const result = acc.result(plan.steps);
+  let minSamples = Infinity,
+    maxSamples = 0;
+  for (const n of result.count) {
+    if (!n) continue;
+    minSamples = Math.min(minSamples, n);
+    maxSamples = Math.max(maxSamples, n);
+  }
+
+  metrics.loadMs = performance.now() - start;
+  send(
+    {
+      id,
+      type: 'normals',
+      normals: {
+        volumeId: request.volumeId,
+        ...result,
+        provenance: {
+          source: metadata.title,
+          snapshot: metadata.snapshot,
+          variable: `${request.variable} (${units})`,
+          years: request.years,
+          windowDays: request.windowDays,
+          interpolatedSteps: plan.interpolatedSteps,
+          steps: plan.steps.length,
+          minSamples: Number.isFinite(minSamples) ? minSamples : 0,
+          maxSamples,
+        },
+      },
+      metrics: report(),
+    },
+    [result.mean.buffer, result.sd.buffer, result.count.buffer],
+  );
 }
 
 let opening: Promise<void> | undefined;
@@ -581,6 +867,11 @@ self.onmessage = (event: MessageEvent<Request>) => {
     } else {
       await opening;
       if (!metadata) throw Error('Open a dataset first.');
+      if (r.type === 'baseline') {
+        await baseline(r, r.id, controller.signal);
+
+        return;
+      }
       if (++loads % 32 === 0) arrays.clear();
       await load(r.variable, r.init, r.extent, r.id, controller.signal);
     }

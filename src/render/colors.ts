@@ -26,6 +26,33 @@ export const palettes = {
     [142, 207, 190],
     [234, 243, 207],
   ],
+  /** ColorBrewer RdBu (11 classes), reversed: blue below, red above a centred zero. */
+  balance: [
+    [5, 48, 97],
+    [33, 102, 172],
+    [67, 147, 195],
+    [146, 197, 222],
+    [209, 229, 240],
+    [247, 247, 247],
+    [253, 219, 199],
+    [244, 165, 130],
+    [214, 96, 77],
+    [178, 24, 43],
+    [103, 0, 31],
+  ],
+  /** Viridis: perceptually uniform and colour-vision-deficiency safe, for shares 0–100 %. */
+  viridis: [
+    [68, 1, 84],
+    [72, 40, 120],
+    [62, 74, 137],
+    [49, 104, 142],
+    [38, 130, 142],
+    [31, 158, 137],
+    [53, 183, 121],
+    [109, 205, 89],
+    [180, 222, 44],
+    [253, 231, 37],
+  ],
   ember: [
     [35, 26, 58],
     [91, 43, 100],
@@ -75,3 +102,29 @@ export function colorSprite() {
 /** Build the CSS legend gradient from the same stops used by the volume renderer. */
 export const gradient = (p: Palette) =>
   `linear-gradient(90deg, ${palettes[p].map((c) => `rgb(${c.join(',')})`).join(',')})`;
+
+/** Value-suppressing uncertainty palette (after Correll, Moritz & Heer, CHI 2018).
+ * Spread is cut into four bands at thirds of `scale`; band k keeps 8 / 2^k value steps and
+ * moves 0.85 · k / 3 of the way to an approximately lightness-matched grey. The cube's
+ * fragment shader mirrors this function exactly. */
+export const VSUP_BANDS = 4;
+
+export function vsupBand(spread: number, scale: number) {
+  if (!Number.isFinite(spread)) return VSUP_BANDS - 1;
+
+  return Math.min(VSUP_BANDS - 1, Math.floor((3 * spread) / (scale || 1)));
+}
+
+export function vsupColor(
+  scaled: number,
+  band: number,
+  palette: Palette,
+): [number, number, number] {
+  const bins = 2 ** (VSUP_BANDS - 1 - band);
+  const q = (Math.min(Math.floor(Math.max(0, Math.min(1, scaled)) * bins), bins - 1) + 0.5) / bins;
+  const c = color(Math.round(q * 255), 0, 255, palette);
+  const grey = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const f = (0.85 * band) / (VSUP_BANDS - 1);
+
+  return [0, 1, 2].map((i) => Math.round(c[i] + (grey - c[i]) * f)) as [number, number, number];
+}

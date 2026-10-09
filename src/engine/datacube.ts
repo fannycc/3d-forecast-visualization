@@ -69,7 +69,8 @@ export function resolveAxes(
     const x = spatial('x', ['longitude', 'lon', 'x']);
     const y = spatial('y', ['latitude', 'lat', 'y']);
     const init =
-      names.length === 4 ? conventional(['init_time', 'forecast_reference_time']) : undefined;
+      names.length >= 4 ? conventional(['init_time', 'forecast_reference_time']) : undefined;
+    const member = conventional(['ensemble_member', 'realization', 'number', 'member']);
     const lead = conventional(['lead_time', 'forecast_period']);
     const temporal = entries
       .filter(([n, d]) => d.type === 'temporal' && n !== init)
@@ -80,10 +81,16 @@ export function resolveAxes(
         `Axis mapping required for [${names.join(', ')}]. Supply longitude, latitude, time and optional initialization dimensions.`,
       );
 
-    axes = { x, y, t, ...(init ? { init } : {}) };
+    axes = { x, y, t, ...(init ? { init } : {}), ...(member ? { member } : {}) };
   }
 
-  const selected = [axes.x, axes.y, axes.t, ...(axes.init ? [axes.init] : [])];
+  const selected = [
+    axes.x,
+    axes.y,
+    axes.t,
+    ...(axes.init ? [axes.init] : []),
+    ...(axes.member ? [axes.member] : []),
+  ];
   if (
     selected.length !== names.length ||
     new Set(selected).size !== names.length ||

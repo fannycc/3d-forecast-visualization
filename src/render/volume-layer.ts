@@ -28,6 +28,11 @@ type Props = LayerProps & {
   slices: [number, number, number];
   range: [number, number];
   palette: Palette;
+  /** Ensemble spread per cell, in the units of the shown quantity. */
+  uncertainty?: Float32Array;
+  uncertaintyMode?: 'off' | 'suppress' | 'hatch';
+  /** Spread at which suppression is complete, and at or above which cells are hatched. */
+  uncertaintyScale?: number;
   onReady?: () => void;
 };
 
@@ -44,6 +49,7 @@ export class VolumeLayer extends Layer<Props> {
     selectionTexture: Texture;
     coords: Texture;
     paletteTexture: Texture;
+    uncertaintyTexture?: Texture;
     reported?: boolean;
   };
 
@@ -162,6 +168,24 @@ export class VolumeLayer extends Layer<Props> {
       this.state.model.setBindings({ volumeTexture: texture, coordinatesTexture: coords });
     }
 
+    if (props.volume !== oldProps.volume || props.uncertainty !== oldProps.uncertainty) {
+      this.state.uncertaintyTexture?.destroy();
+      const u = props.uncertainty;
+      const [depth, height, width] = u ? props.volume.shape : [1, 1, 1];
+      const uncertaintyTexture = this.context.device.createTexture({
+        dimension: '3d',
+        format: 'r32float',
+        width,
+        height,
+        depth,
+        data: u ?? new Float32Array([0]),
+        mipLevels: 1,
+        sampler: { minFilter: 'nearest', magFilter: 'nearest' },
+      });
+      this.setState({ uncertaintyTexture });
+      this.state.model.setBindings({ uncertaintyTexture });
+    }
+
     if (props.volume !== oldProps.volume || props.selectionMask !== oldProps.selectionMask) {
       this.state.selectionTexture?.destroy();
       const mask = props.selectionMask;
@@ -223,6 +247,13 @@ export class VolumeLayer extends Layer<Props> {
         valueRange: range,
         spatialCoverage: v.spatialCoverage ?? [0, 0, v.shape[2] - 1, v.shape[1] - 1],
         paletteIndex: paletteNames.indexOf(palette),
+        uncertaintyMode:
+          this.props.uncertainty && this.props.uncertaintyMode === 'suppress'
+            ? 1
+            : this.props.uncertainty && this.props.uncertaintyMode === 'hatch'
+              ? 2
+              : 0,
+        uncertaintyScale: this.props.uncertaintyScale ?? 1,
       },
     });
 
@@ -249,6 +280,7 @@ export class VolumeLayer extends Layer<Props> {
     this.state.faceBuffer?.destroy();
     this.state.texture?.destroy();
     this.state.selectionTexture?.destroy();
+    this.state.uncertaintyTexture?.destroy();
     this.state.coords?.destroy();
     this.state.paletteTexture?.destroy();
     this.state.model?.destroy();

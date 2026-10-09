@@ -8,6 +8,8 @@ const uniformBlock = `uniform volumeUniforms {
  float timeIndex;
  vec2 valueRange;
  float paletteIndex;
+ float uncertaintyMode;
+ float uncertaintyScale;
 } volume;`;
 
 export const volumeModule = {
@@ -24,6 +26,8 @@ export const volumeModule = {
     timeIndex: 'f32',
     valueRange: 'vec2<f32>',
     paletteIndex: 'f32',
+    uncertaintyMode: 'f32',
+    uncertaintyScale: 'f32',
   },
 } as const;
 
@@ -100,6 +104,7 @@ uniform sampler3D volumeTexture;
 uniform sampler2D paletteTexture;
 uniform sampler3D selectionTexture;
 uniform sampler2D coordinatesTexture;
+uniform sampler3D uncertaintyTexture;
 in vec3 vCoord;
 flat in int cellId;
 out vec4 fragColor;
@@ -122,7 +127,23 @@ void main(){
  bool missing=isnan(value)||isinf(value);
  float span=volume.valueRange.y-volume.valueRange.x;
  float scaled=clamp((value-volume.valueRange.x)/(span==0.?1.:span),0.,1.);
- fragColor=texture(paletteTexture,vec2(scaled,(volume.paletteIndex+.5)/float(textureSize(paletteTexture,0).y)));
+ float row=(volume.paletteIndex+.5)/float(textureSize(paletteTexture,0).y);
+ fragColor=texture(paletteTexture,vec2(scaled,row));
+ // Uncertainty encodings mirror vsupColor() in colors.ts: 1 = value-suppressing palette, 2 = hatching.
+ if(volume.uncertaintyMode>.5 && picking.isActive<.5){
+   float spread=texelFetch(uncertaintyTexture,index,0).r;
+   float scale=max(volume.uncertaintyScale,1e-12);
+   if(volume.uncertaintyMode<1.5){
+     float band=(isnan(spread)||isinf(spread))?3.:min(3.,floor(3.*spread/scale));
+     float bins=exp2(3.-band);
+     float q=(min(floor(scaled*bins),bins-1.)+.5)/bins;
+     vec3 c=texture(paletteTexture,vec2(q,row)).rgb;
+     float grey=dot(c,vec3(.2126,.7152,.0722));
+     fragColor.rgb=mix(c,vec3(grey),.85*band/3.);
+   } else if(!(spread<scale) && mod(gl_FragCoord.x+gl_FragCoord.y,7.)<1.75){
+     fragColor.rgb=mix(fragColor.rgb,vec3(.06),.62);
+   }
+ }
  DECKGL_FILTER_COLOR(fragColor,geometry);
  if(picking.isActive<.5) {
    fragColor.a=1.0;

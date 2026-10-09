@@ -1,6 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
-import type { Volume } from '../engine/types';
-import { isWinterTime, timeValue } from '../engine/time-labels';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { DisplayVolume as Volume } from '../engine/derive';
+import { eventSQL, type EventRule } from '../analysis/events';
+import { areaSummary, formatArea } from '../analysis/area';
+import { formatValue } from '../render/value-scale';
+import { isWinterTime, timeLabel, timeValue } from '../engine/time-labels';
 import { readOnlyQuery, useParamValue, applySQL } from '../analysis/state';
 import type { Analysis } from '../analysis/useAnalysis';
 import { Button, Popover } from './ui/primitives';
@@ -20,7 +23,7 @@ export function AnalysisControls({
   onReveal: (cuts: [number, number, number]) => void;
 }) {
   const { state, runtime, matches, status, error } = analysis;
-  const unit = volume.units === 'degree_Celsius' ? '°C' : volume.units;
+  const unit = volume.quantity.units;
   const last = timeValue(volume.times.at(-1)!, volume.timeUnits);
   const first = timeValue(volume.times[0], volume.timeUnits);
   const query = useParamValue(state.sqlDraft);
@@ -47,13 +50,13 @@ export function AnalysisControls({
     setQueryError('');
   };
 
-  const run = async () => {
+  const run = async (text = query) => {
     if (!runtime) return;
     const id = ++generation.current;
     setRunning(true);
     setQueryError('');
     try {
-      const source = readOnlyQuery(query);
+      const source = readOnlyQuery(text);
 
       const schema = (await runtime.coordinator.query(
         `DESCRIBE SELECT * FROM ${source} AS result`,
@@ -62,7 +65,7 @@ export function AnalysisControls({
 
       if (id !== generation.current) return;
       const hasIds = schema.some((field) => field.column_name === 'cell_id');
-      applySQL(state, hasIds ? query : null);
+      applySQL(state, hasIds ? text : null);
     } catch (error) {
       if (id === generation.current) setQueryError((error as Error).message);
     } finally {
@@ -72,6 +75,10 @@ export function AnalysisControls({
 
   const active = applied;
   const cuts = matches?.revealCuts;
+  const area = useMemo(
+    () => (active && matches && !status && !error ? areaSummary(volume, matches.mask) : null),
+    [active, matches, status, error, volume],
+  );
 
   const clipped =
     !status &&
@@ -104,7 +111,7 @@ export function AnalysisControls({
               (status
                 ? 'Updating…'
                 : matches
-                  ? `${matches.count.toLocaleString()} cells`
+                  ? `${matches.count.toLocaleString()} cells matched`
                   : 'Preparing…')}
           </p>
           {active && (
@@ -113,6 +120,14 @@ export function AnalysisControls({
             </button>
           )}
         </div>
+      )}
+      {area && area.matchedCells > 0 && (
+        <AreaResult
+          area={area}
+          volume={volume}
+          time={slices[2]}
+          onTime={(t) => onReveal([slices[0], slices[1], t])}
+        />
       )}
       {active && clipped && (
         <div className="selection-clipped">
@@ -129,6 +144,27 @@ export function AnalysisControls({
             Reveal all matches
           </Button>
         </div>
+      )}
+      {!isWinterTime(volume.timeUnits) && (
+        <EventBuilder
+          key={`${volume.variable}|${volume.quantity.label}`}
+          volume={volume}
+          disabled={!runtime || running}
+          reason={
+            running
+              ? 'Searching…'
+              : runtime
+                ? ''
+                : error && !status
+                  ? `The query engine could not start: ${error}`
+                  : 'Preparing the query engine for this view…'
+          }
+          onRetry={!runtime && error && !status ? analysis.retry : undefined}
+          onFind={(text) => {
+            setQuery(text);
+            run(text);
+          }}
+        />
       )}
       <div className="sql-disclosure">
         <div className="query-toolbar">
@@ -147,9 +183,15 @@ export function AnalysisControls({
                 {unit}
               </p>
               <p>
-                Columns: cell_id, longitude, latitude,{' '}
+                Columns: cell_id, longitude, latitude, cell_area_km2,{' '}
                 {isWinterTime(volume.timeUnits) ? 'winter' : 'forecast_hour'}, value
-                {volume.variable === 'temperature_2m' ? ', temperature' : ''}.
+                {volume.variable === 'temperature_2m' ? ', temperature' : ''}
+                {columnNames(volume).map((c) => `, ${c}`)}.
+              </p>
+              <p>
+                <code>value</code> is what the cube shows: {volume.quantity.label.toLowerCase()} (
+                {unit}). Weight by <code>cell_area_km2</code> for area statistics; cells shrink
+                toward the poles.
               </p>
               <p>
                 Include cell_id to show matching cells in the cube. Filter values and time
@@ -164,7 +206,7 @@ export function AnalysisControls({
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <Button className="run-query" disabled={!runtime || running} onClick={run}>
+        <Button className="run-query" disabled={!runtime || running} onClick={() => run()}>
           {running ? 'Running…' : !runtime ? 'Preparing…' : 'Run query'}
         </Button>
         {queryError && (
@@ -174,5 +216,209 @@ export function AnalysisControls({
         )}
       </div>
     </details>
+  );
+}
+
+function columnNames(volume: Volume) {
+  const names = Object.keys(volume.columns);
+  if (names.includes('normal') && names.includes('forecast'))
+    names.push('anomaly', 'standardized_anomaly');
+
+  return names;
+}
+
+const columnLabels: Record<string, string> = {
+  value: 'Shown value',
+  anomaly: 'Anomaly',
+  standardized_anomaly: 'Standardized anomaly (σ)',
+  ensemble_mean: 'Ensemble mean',
+  ensemble_p10: '10th percentile of members',
+  ensemble_p90: '90th percentile of members',
+  share: 'Share of members',
+  forecast: 'Forecast value',
+};
+
+/** Persistence questions as a form that writes inspectable SQL. */
+function EventBuilder({
+  volume,
+  disabled,
+  reason,
+  onRetry,
+  onFind,
+}: {
+  volume: Volume;
+  disabled: boolean;
+  /** Why the search cannot run right now, shown beside the button. */
+  reason: string;
+  onRetry?: () => void;
+  onFind: (sql: string) => void;
+}) {
+  const columns = [
+    'value',
+    ...columnNames(volume).filter((c) => c in columnLabels && c !== 'forecast'),
+  ];
+  const [rule, setRule] = useState<EventRule>(() => ({
+    column: 'value',
+    direction: 'above',
+    threshold:
+      volume.quantity.kind === 'anomaly'
+        ? Number(formatValue(Math.max(Math.abs(volume.min), Math.abs(volume.max)) / 3))
+        : volume.quantity.kind === 'share'
+          ? 0.5
+          : Number(formatValue(volume.min + (volume.max - volume.min) * 0.75)),
+    minHours: 72,
+  }));
+  const [unit, setUnit] = useState<'h' | 'd'>('d');
+  const column = columns.includes(rule.column) ? rule.column : 'value';
+  const [error, setError] = useState('');
+
+  return (
+    <div className="event-builder">
+      <div className="section-heading">
+        <span>Find persistent events</span>
+      </div>
+      <div className="event-sentence">
+        <span>Cells where</span>
+        <select
+          aria-label="Event column"
+          value={column}
+          onChange={(e) => setRule({ ...rule, column: e.target.value })}
+        >
+          {columns.map((c) => (
+            <option key={c} value={c}>
+              {c === 'value' ? `${columnLabels.value} (${volume.quantity.units})` : columnLabels[c]}
+            </option>
+          ))}
+        </select>
+        <span>stays</span>
+        <select
+          aria-label="Event direction"
+          value={rule.direction}
+          onChange={(e) =>
+            setRule({ ...rule, direction: e.target.value as EventRule['direction'] })
+          }
+        >
+          <option value="above">above</option>
+          <option value="below">below</option>
+        </select>
+        <input
+          aria-label="Event threshold"
+          type="number"
+          step="any"
+          value={rule.threshold}
+          onChange={(e) => setRule({ ...rule, threshold: Number(e.target.value) })}
+        />
+        <span>for at least</span>
+        <input
+          aria-label="Event duration"
+          type="number"
+          min={0}
+          step="any"
+          value={unit === 'd' ? rule.minHours / 24 : rule.minHours}
+          onChange={(e) =>
+            setRule({ ...rule, minHours: Number(e.target.value) * (unit === 'd' ? 24 : 1) })
+          }
+        />
+        <select
+          aria-label="Duration unit"
+          value={unit}
+          onChange={(e) => setUnit(e.target.value as 'h' | 'd')}
+        >
+          <option value="d">days</option>
+          <option value="h">hours</option>
+        </select>
+      </div>
+      <p className="field-note">
+        Every consecutive sample must meet the condition; duration runs from the first to the last
+        of them in valid hours, so irregular forecast steps are counted correctly. Missing data ends
+        a run.
+      </p>
+      <Button
+        disabled={disabled}
+        onClick={() => {
+          try {
+            setError('');
+            onFind(eventSQL({ ...rule, column }));
+          } catch (e) {
+            setError((e as Error).message);
+          }
+        }}
+      >
+        Find events
+      </Button>
+      {disabled && reason && (
+        <p className="field-note" role="status">
+          {reason}{' '}
+          {onRetry && (
+            <button className="text-button" onClick={onRetry}>
+              Try again
+            </button>
+          )}
+        </p>
+      )}
+      {!disabled && rule.minHours === 0 && (
+        <p className="field-note">
+          A duration of 0 matches single moments; set a duration to find conditions that last.
+        </p>
+      )}
+      {error && (
+        <p className="query-error" role="alert">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Area, not cell count: how much of the region a selection covers, and when. */
+function AreaResult({
+  area,
+  volume,
+  time,
+  onTime,
+}: {
+  area: ReturnType<typeof areaSummary>;
+  volume: Volume;
+  time: number;
+  onTime: (t: number) => void;
+}) {
+  const peak = area.peakIndex;
+  const share = area.withData[peak] ? area.matched[peak] / area.withData[peak] : NaN;
+  const max = area.matched[peak] || 1;
+  const units = volume.quantity.kind === 'share' ? '' : volume.quantity.units;
+  const mean =
+    volume.quantity.kind === 'share'
+      ? `${Math.round(area.weightedMean * 100)} %`
+      : `${formatValue(area.weightedMean)} ${units}`;
+
+  return (
+    <div className="area-result">
+      <p>
+        Peak <b>{formatArea(area.matched[peak])}</b>
+        {Number.isFinite(share)
+          ? ` · ${(share * 100).toFixed(share < 0.1 ? 1 : 0)} % of the region with data`
+          : ''}{' '}
+        at {timeLabel(volume.times[peak], volume.timeUnits)}
+      </p>
+      <p>
+        Now <b>{formatArea(area.matched[time])}</b> · area-weighted mean of matches {mean}
+      </p>
+      <div className="area-bars" role="group" aria-label="Matched area by time">
+        {[...area.matched].map((a, t) => (
+          <button
+            key={t}
+            className={t === time ? 'current' : ''}
+            style={{ height: `${Math.max(a > 0 ? 6 : 0, (a / max) * 100)}%` }}
+            title={`${timeLabel(volume.times[t], volume.timeUnits)}: ${formatArea(a)}`}
+            aria-label={`${timeLabel(volume.times[t], volume.timeUnits)}: ${formatArea(a)}`}
+            onClick={() => onTime(t)}
+          />
+        ))}
+      </div>
+      <p className="field-note">
+        Spherical cell areas (R = 6371 km), so high-latitude cells count less than cell totals
+        suggest.
+      </p>
+    </div>
   );
 }

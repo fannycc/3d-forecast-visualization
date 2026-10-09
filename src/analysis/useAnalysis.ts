@@ -1,6 +1,6 @@
 import { isWinterTime } from '../engine/time-labels';
 import { useEffect, useState, useRef, useMemo } from 'react';
-import type { Volume } from '../engine/types';
+import type { DisplayVolume as Volume } from '../engine/derive';
 import { createAnalysisState, updateFilters, useParamValue, applySQL } from './state';
 import type { AnalysisRuntime, MatchResult } from './runtime';
 
@@ -22,6 +22,7 @@ export function useAnalysis(volume: Volume | null, enabled: boolean) {
   const [matches, setMatches] = useState<MatchResult | null>(null);
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     const nextScope = volume ? `${volume.variable}:${volume.init}` : null;
@@ -89,7 +90,7 @@ export function useAnalysis(volume: Volume | null, enabled: boolean) {
       abort.abort();
       instance?.dispose();
     };
-  }, [volume, enabled, state]);
+  }, [volume, enabled, state, attempt]);
 
   useEffect(() => {
     const timer = setTimeout(() => updateFilters(state), 120);
@@ -108,6 +109,8 @@ export function useAnalysis(volume: Volume | null, enabled: boolean) {
         : null,
     status,
     error,
+    /** Start the local query engine again after it failed to prepare. */
+    retry: () => setAttempt((n) => n + 1),
   };
 }
 

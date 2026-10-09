@@ -11,7 +11,18 @@ import { LineLayer, TextLayer, IconLayer } from '@deck.gl/layers';
 import { loadPlaces, placesInRegion, spacedPlaceLabels, type Place } from '../render/places';
 import { webgl2Adapter } from '@luma.gl/webgl';
 import { Hand } from 'lucide-react';
-import { loadBoundaries, clipSegment, type Segment } from '../render/geography';
+import { loadBoundaries, loadLinework, clipSegment, type Segment } from '../render/geography';
+import {
+  loadElevation,
+  onionScale,
+  onionSheets,
+  sheetPosition,
+  subdivide,
+  TERRAIN_ATTRIBUTION,
+  type ElevationGrid,
+  type Region,
+} from '../render/relief';
+import { OnionLayer } from '../render/onion-layer';
 import { WorldMinimap } from './WorldMinimap';
 import { CubeController } from '../render/cube-controller';
 import { cubeProjection } from '../render/cube-projection';
@@ -34,6 +45,9 @@ const cameraController = {
   doubleClickZoom: false,
   touchZoom: true,
 };
+
+/** Most terrain-shaped time layers drawn at once. */
+const ONION_SHEETS = 16;
 
 const initial = {
   target: [0, 0, 0] as [number, number, number],
@@ -230,6 +244,125 @@ export function Cube({
     };
   }, [onError]);
 
+  const [showRelief, setShowRelief] = useState(() => {
+    try {
+      return localStorage.getItem('zarr-sql-views-relief') !== 'off';
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleRelief = () => {
+    const next = !showRelief;
+    setShowRelief(next);
+    try {
+      localStorage.setItem('zarr-sql-views-relief', next ? 'on' : 'off');
+    } catch {}
+  };
+
+  /** The relief covers the loaded region; its latitude order follows the volume's. */
+  const reliefRegion = useMemo<Region>(
+    () => ({
+      west: volume.lon[0],
+      span: (volume.lon.at(-1)! - volume.lon[0] + 360) % 360 || 360,
+      south: volume.lat[0],
+      north: volume.lat.at(-1)!,
+    }),
+    [volume.lon, volume.lat],
+  );
+
+  const [elevation, setElevation] = useState<ElevationGrid | null>(null);
+  const [reliefError, setReliefError] = useState('');
+
+  useEffect(() => {
+    if (!showRelief) return;
+    const abort = new AbortController();
+    setReliefError('');
+    loadElevation(reliefRegion, 220, 220, abort.signal)
+      .then((grid) => {
+        if (!abort.signal.aborted) setElevation(grid);
+      })
+      .catch((error) => {
+        if (!abort.signal.aborted) setReliefError((error as Error).message);
+      });
+
+    return () => abort.abort();
+  }, [reliefRegion, showRelief]);
+
+  const [linework, setLinework] = useState<{ rivers: Segment[]; roads: Segment[] } | null>(null);
+
+  useEffect(() => {
+    if (!showRelief || linework) return;
+    let active = true;
+    loadLinework()
+      .then((data) => {
+        if (active) setLinework(data);
+      })
+      .catch((error) => console.warn(error));
+
+    return () => {
+      active = false;
+    };
+  }, [showRelief, linework]);
+
+  /** Terrain-shaped time layers: which steps are drawn, and how strongly they bend. */
+  const relief = useMemo(() => {
+    if (!showRelief || !elevation) return null;
+    const scale = onionScale(elevation, size[2], size[1], ONION_SHEETS);
+    const depth = size[2];
+    const sheets = onionSheets(volume.times, slices[2], depth, scale.amplitude, ONION_SHEETS);
+    const t0 = volume.times[0],
+      span = volume.times.at(-1)! - t0 || 1;
+    const topZ = ((volume.times[slices[2]] - t0) / span - 0.5) * depth;
+
+    return { grid: elevation, ...scale, sheets, topZ };
+  }, [showRelief, elevation, size, volume.times, slices[2]]);
+
+  /** Rivers, major roads and borders, draped on the top (current) layer. */
+  const drapedLines = useMemo(() => {
+    if (!relief) return { rivers: [], roads: [], borders: [] };
+    const { region } = relief.grid;
+    const lo = Math.min(region.south, region.north),
+      hi = Math.max(region.south, region.north);
+    const eastCut = region.west + ((volume.lon[slices[0]] - volume.lon[0] + 360) % 360);
+    const southCut = volume.lat[slices[1]];
+    const bounds: [number, number, number, number] = [
+      region.west,
+      Math.max(lo, Math.min(southCut, hi)),
+      eastCut,
+      hi,
+    ];
+    const step = region.span / 220;
+    const at = (lon: number, lat: number, lift: number) =>
+      sheetPosition(relief.grid, size, relief.topZ, relief.unitsPerMetre, lon, lat, lift);
+    type Line = { source: [number, number, number]; target: [number, number, number] };
+    const drape = (segments: Segment[], lift: number) => {
+      const out: Line[] = [];
+      for (const segment of segments)
+        for (const shift of [-360, 0, 360]) {
+          const clipped = clipSegment(
+            {
+              source: [segment.source[0] + shift, segment.source[1]],
+              target: [segment.target[0] + shift, segment.target[1]],
+            },
+            bounds,
+          );
+          if (!clipped) continue;
+          const points = subdivide(clipped.source, clipped.target, step);
+          for (let k = 1; k < points.length; k++)
+            out.push({ source: at(...points[k - 1], lift), target: at(...points[k], lift) });
+        }
+
+      return out;
+    };
+
+    return {
+      rivers: drape(linework?.rivers ?? [], 0.9),
+      roads: drape(linework?.roads ?? [], 1),
+      borders: drape(borders, 1.1),
+    };
+  }, [relief, linework, borders, volume.lon, volume.lat, slices[0], slices[1], size]);
+
   const [places, setPlaces] = useState<Place[]>([]);
 
   useEffect(() => {
@@ -255,6 +388,28 @@ export function Cube({
     const east = west + ((volume.lon[slices[0]] - volume.lon[0] + 360) % 360);
     const z = (normalized(volume.times, slices[2]) - 0.5) * size[2] + 0.3;
 
+    if (relief) {
+      const { region } = relief.grid;
+
+      return placesInRegion(places, [
+        region.west,
+        Math.min(region.south, region.north),
+        region.west + region.span,
+        Math.max(region.south, region.north),
+      ]).map((place) => ({
+        ...place,
+        position: sheetPosition(
+          relief.grid,
+          size,
+          relief.topZ,
+          relief.unitsPerMetre,
+          place.lon,
+          place.lat,
+          1.5,
+        ),
+      }));
+    }
+
     return placesInRegion(places, [west, volume.lat[slices[1]] + dy, east, north]).map((place) => ({
       ...place,
       position: [
@@ -263,7 +418,7 @@ export function Cube({
         z,
       ] as [number, number, number],
     }));
-  }, [places, volume, slices, regionOffset, size]);
+  }, [places, volume, slices, regionOffset, size, relief]);
 
   const geographicLines = useMemo(() => {
     const west =
@@ -619,25 +774,63 @@ export function Cube({
 
   const layers = useMemo(
     () => [
-      new VolumeLayer({
-        id: 'volume',
-        opacity: 1,
-        parameters: { blend: false, depthWriteEnabled: true, depthCompare: 'less-equal' },
-        volume,
-        size,
-        selectionMask,
-        regionOffset,
-        slices,
-        range,
-        palette,
-        onReady: reportReady,
-        pickable: true,
-        coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
-      }),
+      ...(relief
+        ? (
+            [
+              ['relief-rivers', drapedLines.rivers, [64, 108, 150, 235], 1.1],
+              ['relief-roads', drapedLines.roads, [70, 64, 58, 170], 0.7],
+              ['relief-borders', drapedLines.borders, [30, 34, 42, 230], 1.2],
+            ] as const
+          ).map(
+            ([id, data, color, width]) =>
+              new LineLayer({
+                id,
+                data,
+                getSourcePosition: (d) => d.source,
+                getTargetPosition: (d) => d.target,
+                getColor: color as unknown as [number, number, number, number],
+                getWidth: width,
+                parameters: { depthCompare: 'less-equal', depthWriteEnabled: false },
+                coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+                pickable: false,
+              }),
+          )
+        : []),
+      relief && !selectionMask && !regionOffset[0] && !regionOffset[1]
+        ? new OnionLayer({
+            id: 'onion',
+            volume,
+            grid: relief.grid,
+            size,
+            sheets: relief.sheets,
+            unitsPerMetre: relief.unitsPerMetre,
+            slices,
+            range,
+            palette,
+            onReady: reportReady,
+            pickable: true,
+            coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+          })
+        : new VolumeLayer({
+            id: 'volume',
+            opacity: 1,
+            parameters: { blend: false, depthWriteEnabled: true, depthCompare: 'less-equal' },
+            volume,
+            size,
+            selectionMask,
+            regionOffset,
+            slices,
+            range,
+            palette,
+            onReady: reportReady,
+            pickable: true,
+            coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+          }),
       ...[true, false].map(
         (halo) =>
           new LineLayer({
             id: halo ? 'country-border-halo' : 'country-borders',
+            visible: !relief,
             data: geographicLines,
             getSourcePosition: (d) => d.source,
             getTargetPosition: (d) => d.target,
@@ -662,7 +855,8 @@ export function Cube({
         fontSettings: { sdf: true, buffer: 8 },
         outlineWidth: 5,
         outlineColor: [255, 255, 255, 230],
-        parameters: { depthCompare: 'always', depthWriteEnabled: false },
+        // On the relief, labels hide behind the cube instead of floating over the data.
+        parameters: { depthCompare: relief ? 'less-equal' : 'always', depthWriteEnabled: false },
         billboard: true,
         pickable: false,
         coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
@@ -728,6 +922,8 @@ export function Cube({
       }),
     ],
     [
+      relief,
+      drapedLines,
       volume,
       size,
       selectionMask,
@@ -923,7 +1119,19 @@ export function Cube({
         }
         showLabels={showLabels}
         onLabels={toggleLabels}
+        showRelief={showRelief}
+        onRelief={toggleRelief}
       />
+      {showRelief && (
+        <p className="relief-caption">
+          {relief
+            ? `Each layer is one forecast time (${relief.sheets.length} of ${volume.times.length} shown), bent by the terrain: heights ×${relief.exaggeration}, kept below the gap between layers; sea drawn flat. `
+            : reliefError
+              ? `Relief unavailable: ${reliefError} `
+              : 'Loading relief… '}
+          <span>{TERRAIN_ATTRIBUTION}; rivers, roads: Natural Earth.</span>
+        </p>
+      )}
       {hover && mode !== 'slice' ? (
         <div className="hover-inspector">
           <span>

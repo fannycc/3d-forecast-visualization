@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Box, Hand, Layers2, Minus, Plus, Type } from 'lucide-react';
+import { Box, Hand, Layers2, Minus, Mountain, Plus, Type } from 'lucide-react';
 import { Button, Tip } from './ui/primitives';
 
 export type CubeMode = 'orbit' | 'pan' | 'slice';
@@ -17,6 +17,8 @@ export function CubeToolbar({
   zoom,
   showLabels,
   onLabels,
+  showRelief,
+  onRelief,
 }: {
   mode: CubeMode;
   onMode: (mode: CubeMode) => void;
@@ -25,6 +27,8 @@ export function CubeToolbar({
   zoom: number;
   showLabels: boolean;
   onLabels: () => void;
+  showRelief: boolean;
+  onRelief: () => void;
 }) {
   const [focused, setFocused] = useState(0);
   const actions = [
@@ -68,6 +72,14 @@ export function CubeToolbar({
       content: <Type size={16} aria-hidden="true" />,
       pressed: showLabels,
       onClick: onLabels,
+      disabled: false,
+    },
+    {
+      label: 'Relief',
+      hint: showRelief ? 'Hide the relief model' : 'Show the relief model below the cube',
+      content: <Mountain size={16} aria-hidden="true" />,
+      pressed: showRelief,
+      onClick: onRelief,
       disabled: false,
     },
   ];

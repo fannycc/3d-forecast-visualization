@@ -3320,3 +3320,1172 @@ html.region-pan-active * {
 .relief-caption span {
   color: #8b8e96;
 }
+
+/* ==== 3D Forecast story theme ===========================================================
+ * Light by default; the dark option follows the reference images: near-black ground, cyan
+ * wireframe, green glow, yellow markers. Figures and kickers are monospace, after
+ * Morphocode Explorer. */
+:root {
+  --ink: #283343;
+  --ink-soft: #5d6878;
+  --ink-faint: #8a93a1;
+  --ground: #f8f9fb;
+  --panel: #ffffff;
+  --panel-raised: #f3f5f8;
+  --line: #e4e8ee;
+  --cyan: #2a8d9c;
+  --green: #18885a;
+  --yellow: #a97c00;
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+:root[data-theme='dark'] {
+  --ink: #e6f2f0;
+  --ink-soft: #9fb3b3;
+  --ink-faint: #61757a;
+  --ground: #05080b;
+  --panel: #0a0f13;
+  --panel-raised: #10171c;
+  --line: #1c2a31;
+  --cyan: #56d6e2;
+  --green: #7cf2a6;
+  --yellow: #e8f25c;
+  --border: var(--line);
+  --muted: var(--ink-soft);
+  --accent: var(--cyan);
+  color-scheme: dark;
+  color: var(--ink);
+  background: var(--ground);
+}
+:root[data-theme='dark'] body {
+  background: var(--ground);
+}
+:root[data-theme='dark'] .app-shell,
+:root[data-theme='dark'] .workbench,
+:root[data-theme='dark'] .main-view,
+:root[data-theme='dark'] .visualization,
+:root[data-theme='dark'] .viewer-panels {
+  background: var(--ground);
+  color: var(--ink);
+}
+:root[data-theme='dark'] .app-shell .app-bar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+:root[data-theme='dark'] .app-shell .app-bar .brand,
+:root[data-theme='dark'] .app-shell .header-context {
+  color: var(--ink);
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+}
+:root[data-theme='dark'] .app-shell .header-context {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+:root[data-theme='dark'] .app-shell .button {
+  background: var(--panel-raised);
+  border-color: var(--line);
+  color: var(--ink);
+}
+:root[data-theme='dark'] .app-shell .button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink-soft);
+}
+:root[data-theme='dark'] .app-shell .button.ghost:hover {
+  color: var(--ink);
+  background: var(--panel-raised);
+}
+:root[data-theme='dark'] .app-shell .button.primary {
+  background: var(--green);
+  border-color: var(--green);
+  color: #03130a;
+  font-weight: 600;
+}
+:root[data-theme='dark'] .app-shell select,
+:root[data-theme='dark'] .app-shell input,
+:root[data-theme='dark'] .app-shell textarea,
+:root[data-theme='dark'] .app-shell .run-picker-trigger {
+  background: var(--panel-raised) !important;
+  border-color: var(--line) !important;
+  color: var(--ink) !important;
+}
+:root[data-theme='dark'] .app-shell .sidebar,
+:root[data-theme='dark'] .app-shell .sidebar-panel {
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  color: var(--ink);
+}
+:root[data-theme='dark'] .app-shell .sidebar-resizer {
+  background: var(--line);
+}
+:root[data-theme='dark'] .app-shell .control-section {
+  border-bottom: 0;
+  padding: 0;
+}
+:root[data-theme='dark'] .app-shell .control-section label,
+:root[data-theme='dark'] .app-shell .section-heading,
+:root[data-theme='dark'] .app-shell .legend > div:first-child > span {
+  color: var(--ink-soft);
+}
+:root[data-theme='dark'] .app-shell .section-heading {
+  display: none;
+}
+:root[data-theme='dark'] .app-shell .field-note,
+:root[data-theme='dark'] .app-shell .sidebar .field-note,
+:root[data-theme='dark'] .app-shell .legend-numbers,
+:root[data-theme='dark'] .app-shell .vsup-band,
+:root[data-theme='dark'] .app-shell .vsup-axis,
+:root[data-theme='dark'] .app-shell .vsup-legend figcaption {
+  color: var(--ink-faint);
+}
+:root[data-theme='dark'] .app-shell .sidebar .field-note.caveat {
+  background: rgb(232 242 92 / 0.06);
+  border-left-color: var(--yellow);
+  color: #d6dd8e;
+}
+:root[data-theme='dark'] .app-shell .segmented {
+  background: var(--ground);
+  border-color: var(--line);
+}
+:root[data-theme='dark'] .app-shell .segmented button {
+  color: var(--ink-soft);
+}
+:root[data-theme='dark'] .app-shell .segmented button.selected {
+  background: var(--panel-raised);
+  color: var(--green);
+  box-shadow: inset 0 0 0 1px rgb(124 242 166 / 0.35);
+}
+:root[data-theme='dark'] .app-shell .segmented.two {
+  grid-template-columns: 1fr 1fr;
+  margin: 14px 0 4px;
+}
+:root[data-theme='dark'] .app-shell .baseline-cost,
+:root[data-theme='dark'] .app-shell .baseline-progress,
+:root[data-theme='dark'] .app-shell .area-result {
+  background: var(--panel-raised);
+  border-color: var(--line);
+}
+:root[data-theme='dark'] .app-shell .baseline-cost > p:first-child,
+:root[data-theme='dark'] .app-shell .baseline-progress p,
+:root[data-theme='dark'] .app-shell .area-result > p,
+:root[data-theme='dark'] .app-shell .provenance dd,
+:root[data-theme='dark'] .app-shell .event-sentence {
+  color: var(--ink);
+}
+:root[data-theme='dark'] .app-shell .area-result b {
+  color: var(--green);
+}
+:root[data-theme='dark'] .app-shell .area-bars button {
+  background: #2b4a52;
+}
+:root[data-theme='dark'] .app-shell .area-bars button.current {
+  background: var(--yellow);
+}
+:root[data-theme='dark'] .app-shell .event-builder {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+/* Story panel */
+.story-panel {
+  height: 100%;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  padding-bottom: 55vh;
+}
+.story-header {
+  padding: 28px 24px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.story-brand {
+  margin: 0 0 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--green);
+}
+.story-header h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--ink);
+}
+.story-lede {
+  margin: 10px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+.story-section {
+  padding: 28px 24px 30px;
+  border-bottom: 1px solid var(--line);
+  opacity: 0.38;
+  transition: opacity 0.35s ease;
+  cursor: pointer;
+}
+.story-section.active {
+  opacity: 1;
+  cursor: default;
+}
+.story-section:hover {
+  opacity: 0.7;
+}
+.story-section.active:hover {
+  opacity: 1;
+}
+.story-kicker {
+  margin: 0 0 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+.story-section h2 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--ink);
+}
+.story-intro {
+  margin: 10px 0 18px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+.story-body > * + * {
+  margin-top: 14px;
+}
+.story-body label {
+  display: block;
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+.story-body select {
+  width: 100%;
+  margin-bottom: 16px;
+}
+.story-figures {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px 16px;
+  margin-top: 20px !important;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.story-figures b {
+  display: block;
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 500;
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.story-figures span {
+  display: block;
+  margin-top: 4px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--ink-faint);
+}
+.story-needs {
+  padding: 14px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+}
+.story-needs p {
+  margin: 0 0 12px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.story-list-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 22px !important;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+.story-list-heading select {
+  width: auto;
+  margin: 0;
+  font-size: 11px;
+}
+.story-ranking {
+  margin: 8px 0 0 !important;
+  padding: 0;
+  list-style: none;
+  counter-reset: rank;
+}
+.story-ranking li {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  counter-increment: rank;
+  font-size: 13px;
+}
+.story-ranking li::before {
+  content: counter(rank, decimal-leading-zero);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+.story-ranking b {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--yellow);
+}
+.story-legend {
+  margin-top: 4px;
+}
+.story-footer {
+  padding: 18px 24px;
+}
+
+/* Progress ticks, Morphocode-style, on the cube's left edge */
+.story-ticks {
+  position: relative;
+  z-index: 6;
+  margin-top: 28px;
+  display: grid;
+  gap: 9px;
+}
+.story-ticks button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.story-ticks span {
+  display: block;
+  width: 12px;
+  height: 2px;
+  background: var(--ink-faint);
+  transition:
+    width 0.25s ease,
+    background 0.25s ease;
+}
+.story-ticks em {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-style: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: transparent;
+  transition: color 0.2s ease;
+}
+.story-ticks button:hover em,
+.story-ticks button.active em {
+  color: var(--ink-soft);
+}
+.story-ticks button.active span {
+  width: 26px;
+  background: var(--green);
+  box-shadow: 0 0 8px rgb(124 242 166 / 0.7);
+}
+
+:root[data-theme='dark'] .app-shell .camera-tools,
+:root[data-theme='dark'] .app-shell .hover-inspector,
+:root[data-theme='dark'] .app-shell .world-minimap,
+:root[data-theme='dark'] .app-shell .filter-notice,
+:root[data-theme='dark'] .app-shell .time-series,
+:root[data-theme='dark'] .app-shell .transport {
+  background: rgb(10 15 19 / 0.92);
+  border-color: var(--line);
+  color: var(--ink);
+}
+:root[data-theme='dark'] .app-shell .camera-tools button,
+:root[data-theme='dark'] .app-shell .camera-tools .button {
+  color: var(--ink-soft);
+  background: transparent;
+}
+:root[data-theme='dark'] .app-shell .camera-tools [aria-pressed='true'] {
+  color: var(--green);
+  background: var(--panel-raised);
+}
+:root[data-theme='dark'] .app-shell .hover-inspector b {
+  color: var(--ink);
+}
+:root[data-theme='dark'] .app-shell .hover-inspector .hover-quantity,
+:root[data-theme='dark'] .app-shell .hover-inspector .hover-detail,
+:root[data-theme='dark'] .app-shell .relief-caption,
+:root[data-theme='dark'] .app-shell .relief-caption span {
+  color: var(--ink-soft);
+}
+:root[data-theme='dark'] .app-shell .lead-label,
+:root[data-theme='dark'] .app-shell .end-label {
+  font-family: var(--mono);
+  color: var(--ink-soft);
+}
+:root[data-theme='dark'] .app-shell .slider-track {
+  background: var(--line);
+}
+:root[data-theme='dark'] .app-shell .slider-range,
+:root[data-theme='dark'] .app-shell .slider-thumb {
+  background: var(--green);
+  border-color: var(--green);
+}
+:root[data-theme='dark'] .app-shell .point-chart line {
+  stroke: var(--line);
+}
+:root[data-theme='dark'] .app-shell .point-chart text,
+:root[data-theme='dark'] .app-shell .panel-heading {
+  fill: var(--ink-faint);
+  color: var(--ink-soft);
+}
+:root[data-theme='dark'] .app-shell .world-minimap svg path {
+  fill: #1d2a30;
+}
+.segmented.two {
+  grid-template-columns: 1fr 1fr;
+  margin: 14px 0 4px;
+}
+.story-panel .control-section {
+  border-bottom: 0;
+  padding: 0;
+}
+.story-panel .section-heading {
+  display: none;
+}
+:root[data-theme='dark'] .control-rail,
+:root[data-theme='dark'] .world-minimap,
+:root[data-theme='dark'] .tour-card,
+:root[data-theme='dark'] .dialog-content,
+:root[data-theme='dark'] .run-picker-list {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+}
+:root[data-theme='dark'] .world-minimap svg path {
+  fill: #24343b;
+}
+
+/* ==== Story typography and emphasis (flat, Morphocode-like) ============================
+ * Serif for headlines only (after the Anthropic Interviewer page); a clean sans for
+ * everything else. The active section gets a flat accent bar on its right edge, and the
+ * cube sits in a soft wash of light. */
+:root {
+  --sans: 'Instrument Sans', Inter, -apple-system, 'Segoe UI', sans-serif;
+  --serif: Newsreader, 'Source Serif 4', Georgia, serif;
+  --daylight:
+    radial-gradient(900px 620px at 72% 8%, rgb(255 255 255 / 0.9), transparent 65%),
+    linear-gradient(180deg, #f8f9fb 0%, #eef0f3 100%);
+  font-family: var(--sans);
+}
+:root[data-theme='dark'] {
+  --daylight:
+    radial-gradient(900px 620px at 72% 4%, rgb(120 210 220 / 0.12), transparent 65%),
+    linear-gradient(180deg, #070b0e 0%, #05080b 100%);
+}
+body,
+.app-shell {
+  font-family: var(--sans);
+}
+.app-shell .main-view,
+.app-shell .visualization {
+  background: var(--daylight);
+}
+.app-shell .viewer-panels {
+  background: transparent;
+}
+.app-shell .story-header h1,
+.app-shell .story-section h2 {
+  font-family: var(--serif);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+.app-shell .story-header h1 {
+  font-size: 26px;
+  line-height: 1.12;
+}
+.app-shell .story-section h2 {
+  font-size: 23px;
+  line-height: 1.18;
+}
+.app-shell .story-section {
+  position: relative;
+  opacity: 0.3;
+}
+.app-shell .story-section.active {
+  opacity: 1;
+}
+.app-shell .story-section.active::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 4px;
+  background: var(--green);
+}
+
+/* Index in the left rail: ticks only; the label appears beside the tick on hover. */
+.story-ticks em {
+  position: absolute;
+  left: 34px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 3px 7px;
+  border-radius: 4px;
+  background: var(--panel);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.story-ticks button:hover em {
+  opacity: 1;
+  color: var(--ink-soft);
+}
+.story-ticks button.active em {
+  color: transparent;
+}
+.story-ticks button.active:hover em {
+  color: var(--ink-soft);
+}
+
+/* Accent: near-black in light, near-white in dark */
+:root {
+  --green: #16191e;
+  --cyan: #4b5361;
+}
+:root[data-theme='dark'] {
+  --green: #e9eef0;
+  --cyan: #aab6bb;
+  --yellow: #e9eef0;
+}
+.app-shell .story-ranking b {
+  color: var(--ink);
+}
+.app-shell .story-ticks button.active span {
+  background: var(--green);
+  box-shadow: none;
+}
+
+/* Tools float at the top, centred over the visualization */
+.app-shell .camera-tools {
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  z-index: 5;
+  max-width: calc(100% - 24px);
+  border-radius: 9px;
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.06),
+    0 6px 18px rgb(0 0 0 / 0.07);
+}
+.app-shell .camera-tools .button:disabled {
+  opacity: 0.32;
+}
+
+/* The top bar is gone; its actions sit at the top of the story panel */
+.story-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 24px;
+  background: var(--panel-raised);
+  border-bottom: 1px solid var(--line);
+}
+.app-shell .story-header {
+  background: var(--panel-raised);
+  border-bottom: 1px solid var(--line);
+}
+.story-topbar .story-brand {
+  margin: 0;
+}
+.story-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.story-actions .button {
+  font-size: 12px;
+}
+
+/* Terrain options, opened from the relief button */
+.popover:has(.relief-menu) {
+  width: 300px;
+  padding: 16px;
+}
+.relief-menu {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  font-size: 12px;
+}
+.relief-menu label {
+  margin: 0;
+  color: var(--ink-soft);
+}
+.relief-menu .relief-switch {
+  display: flex !important;
+  flex-direction: row !important;
+  justify-content: flex-start !important;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink) !important;
+  font-weight: 500;
+}
+.relief-menu select {
+  width: 100%;
+}
+.relief-menu p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.relief-menu .relief-sources {
+  color: var(--ink-faint);
+}
+
+/* Flat radial view */
+.radial-view {
+  position: absolute;
+  inset: 0 0 24px;
+}
+.radial-view canvas {
+  display: block;
+}
+.radial-tooltip {
+  position: absolute;
+  z-index: 6;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel, #fff);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.1);
+}
+.radial-caption {
+  position: absolute;
+  left: 16px;
+  bottom: 0;
+  max-width: min(560px, calc(100% - 200px));
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.relief-menu .relief-switch input {
+  width: auto;
+  margin: 0;
+}
+
+/* Flat view: arrangement switch and location picker */
+.radial-arrangement {
+  position: absolute;
+  z-index: 5;
+  top: 64px;
+  left: 16px;
+  width: 200px;
+}
+.region-picker {
+  position: absolute;
+  z-index: 5;
+  right: 14px;
+  bottom: 30px;
+  width: 168px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel, #fff);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.08);
+}
+.region-picker > svg {
+  display: block;
+  width: 100%;
+  cursor: crosshair;
+}
+.region-search svg {
+  flex: none;
+}
+.region-nudges {
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 6px;
+}
+.region-nudges button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.region-nudges button:hover {
+  color: var(--ink);
+}
+.region-picker p {
+  margin: 4px 0 0;
+  text-align: center;
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+.relief-menu .relief-switch {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  white-space: nowrap;
+}
+.relief-menu .relief-switch input[type='checkbox'] {
+  flex: none;
+  width: 14px !important;
+  height: 14px;
+  margin: 0 !important;
+  accent-color: var(--green);
+}
+.relief-menu label[for='relief-height'] {
+  display: block;
+  margin-top: 4px;
+}
+.relief-menu select {
+  display: block;
+  width: 100%;
+  margin: 0 !important;
+}
+.relief-menu p {
+  overflow-wrap: anywhere;
+}
+:root[data-theme='dark'] .popover {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--ink);
+}
+.region-picker {
+  width: 210px;
+}
+.region-title {
+  margin: 0 0 6px !important;
+  text-align: left !important;
+  font-family: var(--mono);
+  font-size: 10px !important;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-soft) !important;
+}
+.region-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink-faint);
+}
+.region-search input {
+  flex: 1 1 auto !important;
+  min-width: 0;
+  width: auto !important;
+  display: block;
+  color: var(--ink) !important;
+  padding: 5px 0;
+  border: 0 !important;
+  background: transparent !important;
+  font-size: 12px;
+  outline: none;
+}
+.region-results {
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.region-results button {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.region-results button:hover {
+  background: var(--panel-raised);
+}
+.region-results span {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-faint);
+}
+.radial-key {
+  position: absolute;
+  z-index: 5;
+  top: 110px;
+  left: 16px;
+  width: 200px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel, #fff);
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.06);
+}
+.radial-key p {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+.radial-key .radial-key-title {
+  margin-bottom: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.radial-key ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.radial-key li {
+  display: grid;
+  grid-template-columns: 26px 1fr auto;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.radial-key li b {
+  font-family: var(--mono);
+  font-weight: 500;
+  color: var(--ink);
+}
+.radial-key circle {
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-dasharray: 2 2;
+}
+
+/* Flat view: one slim legend line at the bottom */
+.radial-legend {
+  position: absolute;
+  left: 16px;
+  bottom: 2px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px 14px;
+  max-width: calc(100% - 210px);
+  font-size: 11px;
+  color: var(--ink-soft);
+  cursor: help;
+}
+.radial-legend-ring {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--mono);
+  color: var(--ink);
+}
+.radial-legend circle {
+  fill: none;
+  stroke: var(--ink-faint);
+  stroke-dasharray: 2 2;
+}
+.radial-legend-hint {
+  color: var(--ink-faint);
+}
+
+/* Location widget (cube and flat view): compact thumbnail that expands */
+.region-picker {
+  z-index: 6;
+}
+.region-picker.collapsed {
+  display: grid;
+  gap: 4px;
+  width: 150px;
+  padding: 6px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.region-picker.collapsed svg {
+  display: block;
+  width: 100%;
+  pointer-events: none;
+}
+.region-collapsed-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10.5px;
+  color: var(--ink-soft);
+}
+.region-picker.collapsed:hover .region-collapsed-label {
+  color: var(--ink);
+}
+.region-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.region-close {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+.region-pending {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2;
+  stroke-dasharray: 4 3;
+}
+.region-picker.collapsed {
+  justify-items: stretch;
+  bottom: 30px;
+}
+
+/* Cube loader: layers build floor-up inside a dashed outline */
+.cube-loader {
+  display: block;
+  margin: 0 auto 18px;
+  overflow: visible;
+}
+.cube-loader-frame polygon,
+.cube-loader-frame path {
+  fill: none;
+  stroke: var(--ink-faint, #8a93a1);
+  stroke-width: 0.8;
+  stroke-dasharray: 2 2.5;
+}
+.cube-loader-layer {
+  stroke: var(--panel, #fff);
+  stroke-width: 0.6;
+  opacity: 0;
+  animation: cube-layer 2.6s cubic-bezier(0.2, 0.7, 0.2, 1) infinite;
+}
+@keyframes cube-layer {
+  0% {
+    opacity: 0;
+    transform: translateY(-14px);
+  }
+  14%,
+  70% {
+    opacity: 0.95;
+    transform: translateY(0);
+  }
+  86%,
+  100% {
+    opacity: 0;
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cube-loader-layer {
+    animation: none;
+    opacity: 0.9;
+  }
+}
+.dataset-loading-overlay {
+  inset: 0;
+  background: var(--ground, #fafafa);
+}
+.dataset-loading-overlay .loading-state {
+  width: 240px;
+}
+.loading-step {
+  display: block;
+  margin-top: 10px;
+  min-height: 1.4em;
+  color: var(--ink-faint, #8a93a1);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* A new region is loading: the old one stays, dimmed, under the loader */
+.region-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--ground, #f8f9fb) 72%, transparent);
+  backdrop-filter: blur(2px);
+}
+.region-loading .loading-state {
+  width: 230px;
+  padding: 18px 18px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel, #fff);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.1);
+}
+
+/* The canvases start below the floating toolbar, so nothing hides under it */
+.app-shell .cube-container {
+  top: 58px;
+}
+
+/* Flat view: the scale of the rings, attached to the bottom edge */
+.radial-legend {
+  display: none;
+}
+.radial-scale {
+  position: absolute;
+  left: 16px;
+  bottom: 4px;
+  display: flex;
+  align-items: center;
+  width: min(380px, calc(100% - 200px));
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink);
+  cursor: help;
+}
+.radial-scale::before,
+.radial-scale::after {
+  content: '';
+  flex: none;
+  width: 0;
+  height: 0;
+  border-block: 4px solid transparent;
+}
+.radial-scale::before {
+  border-right: 6px solid var(--ink-faint);
+  margin-right: 6px;
+}
+.radial-scale::after {
+  border-left: 6px solid var(--ink-faint);
+  margin-left: 6px;
+}
+.radial-scale-step {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  white-space: nowrap;
+}
+.radial-scale-step:first-child {
+  flex: none;
+}
+.radial-scale-line {
+  flex: 1;
+  min-width: 14px;
+  margin: 0 6px;
+  border-top: 1px dashed var(--ink-faint);
+}
+
+/* Flat view: the Maps / Colour mix switch sits level with the floating toolbar */
+.app-shell .radial-arrangement {
+  top: 14px;
+  left: 14px;
+  width: 168px;
+  height: 40px;
+  margin: 0;
+  padding: 3px;
+  align-items: stretch;
+  border: 0;
+  border-radius: 9px;
+  background: var(--panel, #fff);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.06),
+    0 6px 18px rgb(0 0 0 / 0.07);
+}
+.app-shell .radial-arrangement button.selected {
+  background: var(--panel-raised, #f3f5f8);
+  box-shadow: none;
+}
+.visualization {
+  container-type: inline-size;
+}
+@container (max-width: 880px) {
+  .app-shell .camera-tools[data-view='radial'] {
+    left: auto;
+    right: 14px;
+    transform: none;
+    max-width: calc(100% - 196px);
+    overflow-x: auto;
+  }
+}
+.app-shell .cube-container .camera-tools {
+  top: -44px;
+}
+
+/* Flat view scale: centred under the whole view, the centre value in the middle and
+   the outer values to both sides, arrows pointing outward */
+.radial-scale {
+  left: 50%;
+  bottom: -20px;
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 32px));
+  justify-content: center;
+}
+.radial-scale::before,
+.radial-scale::after {
+  display: none;
+}
+.radial-scale-arrow {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-block: 4px solid transparent;
+}
+.radial-scale-arrow.left {
+  border-right: 6px solid var(--ink-faint);
+  margin-right: 6px;
+}
+.radial-scale-arrow.right {
+  border-left: 6px solid var(--ink-faint);
+  margin-left: 6px;
+}
+.radial-scale-step,
+.radial-scale-step:first-child {
+  flex: 1 1 auto;
+}
+.radial-scale-value.centre {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--ink-faint);
+  border-radius: 4px;
+}

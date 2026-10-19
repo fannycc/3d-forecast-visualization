@@ -10,6 +10,9 @@ const uniformBlock = `uniform volumeUniforms {
  float paletteIndex;
  float uncertaintyMode;
  float uncertaintyScale;
+ float paintActive;
+ vec3 muted;
+ float hideMissing;
 } volume;`;
 
 export const volumeModule = {
@@ -28,6 +31,9 @@ export const volumeModule = {
     paletteIndex: 'f32',
     uncertaintyMode: 'f32',
     uncertaintyScale: 'f32',
+    paintActive: 'f32',
+    muted: 'vec3<f32>',
+    hideMissing: 'f32',
   },
 } as const;
 
@@ -125,6 +131,7 @@ void main(){
  if(volume.filterActive>.5 && texelFetch(selectionTexture,index,0).r<.5) discard;
  float value=texelFetch(volumeTexture,index,0).r;
  bool missing=isnan(value)||isinf(value);
+ if(missing && volume.hideMissing>.5) discard;
  float span=volume.valueRange.y-volume.valueRange.x;
  float scaled=clamp((value-volume.valueRange.x)/(span==0.?1.:span),0.,1.);
  float row=(volume.paletteIndex+.5)/float(textureSize(paletteTexture,0).y);
@@ -143,6 +150,11 @@ void main(){
    } else if(!(spread<scale) && mod(gl_FragCoord.x+gl_FragCoord.y,7.)<1.75){
      fragColor.rgb=mix(fragColor.rgb,vec3(.06),.62);
    }
+ }
+ // Paint mode keeps every cell but greys the ones outside the selection.
+ if(volume.paintActive>.5 && picking.isActive<.5 && texelFetch(selectionTexture,index,0).r<.5){
+   float g=dot(fragColor.rgb,vec3(.2126,.7152,.0722));
+   fragColor.rgb=mix(vec3(g),volume.muted,.72);
  }
  DECKGL_FILTER_COLOR(fragColor,geometry);
  if(picking.isActive<.5) {

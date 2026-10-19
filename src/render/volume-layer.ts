@@ -24,6 +24,12 @@ type Props = LayerProps & {
   volume: Volume;
   size: [number, number, number];
   selectionMask?: Uint8Array | null;
+  /** isolate draws only matching cells; paint keeps the cube and greys non-matches. */
+  selectionStyle?: 'isolate' | 'paint';
+  /** Colour that non-matching cells fade toward in paint mode. */
+  muted?: [number, number, number];
+  /** Draw nothing (instead of black) where values are missing, e.g. the member-split gap. */
+  hideMissing?: boolean;
   regionOffset?: [number, number];
   slices: [number, number, number];
   range: [number, number];
@@ -209,19 +215,22 @@ export class VolumeLayer extends Layer<Props> {
     if (
       props.volume !== oldProps.volume ||
       props.selectionMask !== oldProps.selectionMask ||
+      props.selectionStyle !== oldProps.selectionStyle ||
       props.slices[0] !== oldProps.slices?.[0] ||
       props.slices[1] !== oldProps.slices?.[1]
     ) {
-      const faces = props.selectionMask
-        ? voxelTimelineFaces(props.selectionMask, props.volume.shape, props.slices)
-        : new Float32Array([0, 0]);
+      const isolate = props.selectionMask && props.selectionStyle !== 'paint';
+      const faces =
+        isolate && props.selectionMask
+          ? voxelTimelineFaces(props.selectionMask, props.volume.shape, props.slices)
+          : new Float32Array([0, 0]);
       this.state.faceBuffer.destroy();
       const faceBuffer = this.context.device.createBuffer({
         data: faces.length ? faces : new Float32Array([0, 0]),
       });
       this.state.model.setAttributes({ instanceCellFace: faceBuffer });
       this.state.model.setInstanceCount(faces.length / 2);
-      this.state.model.setVertexCount(props.selectionMask ? 6 : 36);
+      this.state.model.setVertexCount(isolate ? 6 : 36);
       this.setState({ faceBuffer, faceCount: faces.length / 2 });
     }
   }
@@ -242,7 +251,10 @@ export class VolumeLayer extends Layer<Props> {
         ],
         size: this.props.size,
         counts: [v.shape[2], v.shape[1], v.shape[0]],
-        filterActive: this.props.selectionMask ? 1 : 0,
+        filterActive: this.props.selectionMask && this.props.selectionStyle !== 'paint' ? 1 : 0,
+        paintActive: this.props.selectionMask && this.props.selectionStyle === 'paint' ? 1 : 0,
+        muted: this.props.muted ?? [0.16, 0.18, 0.21],
+        hideMissing: this.props.hideMissing ? 1 : 0,
         timeIndex: slices[2],
         valueRange: range,
         spatialCoverage: v.spatialCoverage ?? [0, 0, v.shape[2] - 1, v.shape[1] - 1],

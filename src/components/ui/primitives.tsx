@@ -106,12 +106,30 @@ export function Slider({
   );
 }
 
-export function Popover({ trigger, children }: { trigger: ReactNode; children: ReactNode }) {
+export function Popover({
+  trigger,
+  children,
+  align = 'center',
+  open,
+  onOpenChange,
+}: {
+  trigger: ReactNode;
+  children: ReactNode;
+  align?: 'start' | 'center' | 'end';
+  /** Optional control of the open state, e.g. when the trigger also toggles a setting. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
   return (
-    <PopoverPrimitive.Root>
+    <PopoverPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <PopoverPrimitive.Trigger asChild>{trigger}</PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
-        <PopoverPrimitive.Content className="popover" sideOffset={8}>
+        <PopoverPrimitive.Content
+          className="popover"
+          sideOffset={8}
+          align={align}
+          collisionPadding={12}
+        >
           {children}
         </PopoverPrimitive.Content>
       </PopoverPrimitive.Portal>

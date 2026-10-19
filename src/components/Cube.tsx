@@ -1,5 +1,5 @@
-import { isWinterTime, timeValue, timeLabel } from '../engine/time-labels';
-import { CubeToolbar, type CubeMode } from './CubeToolbar';
+import { isMemberRank, isWinterTime, timeValue, timeLabel } from '../engine/time-labels';
+import { CubeToolbar, type CubeMode, type ViewMode } from './CubeToolbar';
 import { SliceExplorer } from './SliceExplorer';
 import { PanHint } from './PanHint';
 import { insideProjectedFace } from '../render/surface-hit';
@@ -7,7 +7,7 @@ import { pointMarkerIcon } from '../render/point-marker';
 import { useMemo, useState, useRef, useEffect, useCallback } from 'react';
 import DeckGL from '@deck.gl/react';
 import { OrbitView, OrbitViewport, COORDINATE_SYSTEM, type PickingInfo } from '@deck.gl/core';
-import { LineLayer, TextLayer, IconLayer } from '@deck.gl/layers';
+import { LineLayer, TextLayer, IconLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { loadPlaces, placesInRegion, spacedPlaceLabels, type Place } from '../render/places';
 import { webgl2Adapter } from '@luma.gl/webgl';
 import { Hand } from 'lucide-react';
@@ -30,12 +30,66 @@ import { VolumeLayer, CUBE_SIZE, normalized } from '../render/volume-layer';
 import { normalsMatch, type DisplayVolume } from '../engine/derive';
 import type { Normals } from '../engine/types';
 import { formatValue } from '../render/value-scale';
-import type { Palette } from '../render/colors';
+import { color as paletteColor, type Palette } from '../render/colors';
 import type { Extent } from '../engine/types';
 import { coordinateDate } from '../engine/coordinates';
 import { draggedRegion } from '../render/region-drag';
 
 export type Point = { x: number; y: number; t: number; value: number };
+
+/** What the terrain layers currently show, reported to the story panel. */
+export type ReliefInfo =
+  | { status: 'off' | 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; exaggeration: number; max: number; shown: number; total: number };
+
+/** A ring above the cube: one segment per time layer, coloured by its regional value. */
+export type ClockSpec = {
+  values: ArrayLike<number>;
+  current: number;
+  range: [number, number];
+  palette: Palette;
+  format: (v: number) => string;
+};
+
+/** A vertical beam at one cell, from `from` hours (default the cube floor) up to `hours`. */
+export type Beam = { x: number; y: number; hours: number; from?: number; label: string };
+
+type RGBA = [number, number, number, number];
+
+/** Cube colours per theme. Light is the default; dark follows the reference images. */
+const inks: Record<'light' | 'dark', Record<string, RGBA>> = {
+  light: {
+    wire: [92, 104, 122, 170],
+    axis: [78, 91, 113, 255],
+    label: [65, 77, 97, 255],
+    labelBackground: [248, 249, 251, 235],
+    outline: [255, 255, 255, 235],
+    marker: [214, 140, 0, 255],
+    markerFill: [214, 140, 0, 255],
+    placeLabel: [39, 42, 49, 255],
+    accent: [22, 25, 30, 255],
+    border: [35, 48, 67, 185],
+    rivers: [64, 108, 150, 120],
+    reliefBorders: [30, 34, 42, 175],
+    meanPlane: [196, 120, 0, 220],
+  },
+  dark: {
+    wire: [86, 214, 226, 150],
+    axis: [120, 200, 210, 230],
+    label: [196, 232, 236, 255],
+    labelBackground: [6, 10, 14, 215],
+    outline: [4, 8, 12, 235],
+    marker: [232, 242, 92, 255],
+    markerFill: [232, 242, 92, 255],
+    placeLabel: [236, 246, 242, 255],
+    accent: [233, 238, 240, 255],
+    border: [170, 235, 240, 170],
+    rivers: [96, 186, 255, 120],
+    reliefBorders: [190, 240, 245, 170],
+    meanPlane: [232, 242, 92, 220],
+  },
+};
 
 const cubeView = new OrbitView({ id: 'cube', ...cubeProjection });
 
@@ -65,7 +119,7 @@ export function Cube({
   volume,
   selectionMask,
   points,
-  slices,
+  slices: targetSlices,
   range,
   palette,
   reset,
@@ -83,8 +137,28 @@ export function Cube({
   uncertaintyMode = 'off',
   uncertaintyScale = 1,
   normals,
+  selectionStyle = 'isolate',
+  clock = null,
+  beams = [],
+  theme = 'light',
+  pulse,
+  onReliefInfo,
+  view = 'cube',
+  onView,
+  minimap = true,
 }: {
+  /** Show the built-in world thumbnail (the app may provide its own location widget). */
+  minimap?: boolean;
+  onReliefInfo?: (info: ReliefInfo) => void;
+  view?: ViewMode;
+  onView?: (view: ViewMode) => void;
+  /** Changing this key plays a short spring deformation of the whole cube. */
+  pulse?: string;
+  theme?: 'light' | 'dark';
   volume: DisplayVolume;
+  selectionStyle?: 'isolate' | 'paint';
+  clock?: ClockSpec | null;
+  beams?: Beam[];
   uncertaintyMode?: 'off' | 'suppress' | 'hatch';
   uncertaintyScale?: number;
   normals?: Normals | null;
@@ -107,6 +181,41 @@ export function Cube({
   regionFailure: { message: string } | null;
 }) {
   const size = CUBE_SIZE;
+  /** Terrain height on the layers: a stated exaggeration (1 = true scale) or the maximum that
+   * keeps layers apart. Larger requests are capped at that maximum. */
+  const [reliefHeight, setReliefHeight] = useState<number | 'max'>('max');
+  const ink = inks[theme];
+
+  /** Section-change effect: the cube rebuilds from the floor up to its current top layer
+   * with a smooth ease-out (about half a second), like a quick 3D print. */
+  const [rebuild, setRebuild] = useState(1);
+  const firstPulse = useRef(true);
+  useEffect(() => {
+    if (firstPulse.current) {
+      firstPulse.current = false;
+
+      return;
+    }
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    let frame = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / 520);
+      setRebuild(1 - (1 - t) ** 3);
+      if (t < 1) frame = requestAnimationFrame(tick);
+    };
+    setRebuild(0);
+    frame = requestAnimationFrame(tick);
+
+    return () => cancelAnimationFrame(frame);
+  }, [pulse]);
+  const slices = useMemo<[number, number, number]>(
+    () =>
+      rebuild >= 1
+        ? targetSlices
+        : [targetSlices[0], targetSlices[1], Math.round(rebuild * targetSlices[2])],
+    [targetSlices, rebuild],
+  );
 
   const [showLabels, setShowLabels] = useState(() => {
     try {
@@ -298,7 +407,7 @@ export function Cube({
     return () => abort.abort();
   }, [reliefRegion, showRelief]);
 
-  const [linework, setLinework] = useState<{ rivers: Segment[]; roads: Segment[] } | null>(null);
+  const [linework, setLinework] = useState<{ rivers: Segment[] } | null>(null);
 
   useEffect(() => {
     if (!showRelief || linework) return;
@@ -317,19 +426,54 @@ export function Cube({
   /** Terrain-shaped time layers: which steps are drawn, and how strongly they bend. */
   const relief = useMemo(() => {
     if (!showRelief || !elevation) return null;
-    const scale = onionScale(elevation, size[2], size[1], ONION_SHEETS);
+    const auto = onionScale(elevation, size[2], size[1], ONION_SHEETS);
+    const unitsPerMetre =
+      reliefHeight === 'max'
+        ? auto.unitsPerMetre
+        : Math.min(auto.unitsPerMetre, auto.ground * reliefHeight);
+    const amplitude = unitsPerMetre * Math.max(500, elevation.max);
+    const scale = {
+      amplitude,
+      unitsPerMetre,
+      exaggeration: Math.max(1, Math.round(unitsPerMetre / auto.ground)),
+      max: auto.exaggeration,
+    };
     const depth = size[2];
-    const sheets = onionSheets(volume.times, slices[2], depth, scale.amplitude, ONION_SHEETS);
+    const sheets = onionSheets(
+      volume.times,
+      slices[2],
+      depth,
+      Math.max(amplitude, 2),
+      ONION_SHEETS,
+    );
     const t0 = volume.times[0],
       span = volume.times.at(-1)! - t0 || 1;
     const topZ = ((volume.times[slices[2]] - t0) / span - 0.5) * depth;
 
     return { grid: elevation, ...scale, sheets, topZ };
-  }, [showRelief, elevation, size, volume.times, slices[2]]);
+  }, [showRelief, elevation, size, volume.times, slices[2], reliefHeight]);
 
-  /** Rivers, major roads and borders, draped on the top (current) layer. */
+  useEffect(() => {
+    onReliefInfo?.(
+      !showRelief
+        ? { status: 'off' }
+        : reliefError
+          ? { status: 'error', message: reliefError }
+          : !relief
+            ? { status: 'loading' }
+            : {
+                status: 'ready',
+                exaggeration: relief.exaggeration,
+                max: relief.max,
+                shown: relief.sheets.length,
+                total: volume.times.length,
+              },
+    );
+  }, [showRelief, reliefError, relief, volume.times.length, onReliefInfo]);
+
+  /** Rivers and borders, draped on the top (current) layer. */
   const drapedLines = useMemo(() => {
-    if (!relief) return { rivers: [], roads: [], borders: [] };
+    if (!relief) return { rivers: [], borders: [] };
     const { region } = relief.grid;
     const lo = Math.min(region.south, region.north),
       hi = Math.max(region.south, region.north);
@@ -367,7 +511,6 @@ export function Cube({
 
     return {
       rivers: drape(linework?.rivers ?? [], 0.9),
-      roads: drape(linework?.roads ?? [], 1),
       borders: drape(borders, 1.1),
     };
   }, [relief, linework, borders, volume.lon, volume.lat, slices[0], slices[1], size]);
@@ -568,6 +711,16 @@ export function Cube({
     };
   }, []);
 
+  /** Look down onto the clock ring while it is shown, and back to the usual angle after. */
+  const clockShown = !!clock;
+  useEffect(() => {
+    setCamera((c) => ({
+      ...c,
+      rotationX: clockShown ? 58 : initial.rotationX,
+      zoom: fitZoom.current - (clockShown ? 0.3 : 0),
+    }));
+  }, [clockShown]);
+
   const fitZoom = useRef(-0.8);
   const [compact, setCompact] = useState(false);
   const [viewportSize, setViewportSize] = useState({ width: 1, height: 1 });
@@ -598,7 +751,11 @@ export function Cube({
   }, []);
 
   useEffect(() => {
-    setCamera({ ...initial, zoom: fitZoom.current });
+    setCamera({
+      ...initial,
+      rotationX: clockShown ? 58 : initial.rotationX,
+      zoom: fitZoom.current - (clockShown ? 0.3 : 0),
+    });
     setMode('orbit');
     setHover(null);
   }, [reset]);
@@ -664,9 +821,11 @@ export function Cube({
       'Latitude',
       isWinterTime(volume.timeUnits)
         ? 'Winter'
-        : volume.timeUnits.includes('since ')
-          ? 'Elapsed time'
-          : 'Lead time',
+        : isMemberRank(volume.timeUnits)
+          ? 'Runs vs average'
+          : volume.timeUnits.includes('since ')
+            ? 'Elapsed time'
+            : 'Lead time',
     ];
 
     const halves = [w, h, d];
@@ -716,7 +875,9 @@ export function Cube({
             axis === 2
               ? isWinterTime(volume.timeUnits)
                 ? String(number)
-                : `${number} h`
+                : isMemberRank(volume.timeUnits)
+                  ? timeLabel(number, volume.timeUnits)
+                  : `${number} h`
               : degrees(number, axis === 0 ? 'E' : 'N', axis === 0 ? 'W' : 'S'),
         });
       }
@@ -781,31 +942,111 @@ export function Cube({
     ].map((point) => projection.project(point));
   }, [volume, slices, size, screenProjection]);
 
+  /** Story overlays: the clock ring, place beams and the member view's mean plane. */
+  const overlays = useMemo(() => {
+    const t0 = volume.times[0],
+      span = volume.times.at(-1)! - t0 || 1;
+    const lon = volume.lon.map((n) => (n - volume.lon[0] + 360) % 360);
+    const zOf = (fraction: number) => (fraction - 0.5) * size[2];
+    type Path = { path: [number, number, number][]; color: [number, number, number, number] };
+    type Text = { position: [number, number, number]; text: string; size: number };
+    const paths: Path[] = [];
+    const lines: { source: [number, number, number]; target: [number, number, number] }[] = [];
+    const texts: Text[] = [];
+    const dots: { position: [number, number, number] }[] = [];
+
+    if (clock) {
+      const cutZ = zOf(normalized(volume.times, slices[2]));
+      const R = size[0] * 0.5,
+        z = size[2] / 2 + 70;
+      const angle = (t: number) => (2 * Math.PI * (volume.times[t] - t0)) / span;
+      const at = (a: number, r: number, h = z): [number, number, number] => [
+        r * Math.sin(a),
+        r * Math.cos(a),
+        h,
+      ];
+      const n = volume.times.length;
+      for (let k = 0; k < n; k++) {
+        const a0 = angle(k),
+          a1 = k < n - 1 ? angle(k + 1) : 2 * Math.PI;
+        const steps = Math.max(1, Math.ceil(((a1 - a0) * 180) / Math.PI / 2));
+        const v = clock.values[k];
+        paths.push({
+          path: Array.from({ length: steps + 1 }, (_, i) => at(a0 + ((a1 - a0) * i) / steps, R)),
+          color: Number.isFinite(v)
+            ? paletteColor(v, clock.range[0], clock.range[1], clock.palette)
+            : [150, 155, 162, 255],
+        });
+      }
+      const hand = angle(clock.current);
+      lines.push(
+        { source: at(hand, 0), target: at(hand, R * 0.82) },
+        { source: at(hand, R), target: at(hand, R, cutZ) },
+      );
+      const hours = volume.times.map((v) => timeValue(v, volume.timeUnits));
+      const total = hours.at(-1)! - hours[0];
+      const step = [6, 12, 24, 48, 72, 120, 168, 240].find((h) => total / h <= 6) ?? 240;
+      for (let h = 0; h <= total; h += step) {
+        const a = (2 * Math.PI * h) / (total || 1);
+        if (h > 0 && Math.abs(a - 2 * Math.PI) < 1e-6) continue;
+        lines.push({ source: at(a, R + 7), target: at(a, R + 13) });
+        texts.push({ position: at(a, R + 34), text: `+${h} h`, size: 10 });
+      }
+      texts.push(
+        { position: at(0, 0, z + 14), text: clock.format(clock.values[clock.current]), size: 17 },
+        {
+          position: at(0, 0, z - 6),
+          text: timeLabel(volume.times[clock.current], volume.timeUnits),
+          size: 11,
+        },
+      );
+    }
+
+    beams.forEach((beam, i) => {
+      const x = (normalized(lon, beam.x) - 0.5) * size[0],
+        y = (normalized(volume.lat, beam.y) - 0.5) * size[1];
+      const hours = volume.times.map((v) => timeValue(v, volume.timeUnits));
+      const span = hours.at(-1)! - hours[0] || 1;
+      const top = zOf((beam.hours - hours[0]) / span);
+      if (beam.from === undefined) {
+        // Trust horizons rise through the top layer: a dot marks the horizon on the beam,
+        // and the label sits on a head above the cube, staggered so labels do not collide.
+        const head = size[2] / 2 + 22 + i * 15;
+        lines.push({ source: [x, y, -size[2] / 2], target: [x, y, head] });
+        dots.push({ position: [x, y, top] }, { position: [x, y, head] });
+        texts.push({ position: [x, y, head + 12], text: beam.label, size: 13 });
+
+        return;
+      }
+      const bottom = zOf((beam.from - hours[0]) / span);
+      lines.push({ source: [x, y, bottom], target: [x, y, top] });
+      dots.push({ position: [x, y, top] }, { position: [x, y, bottom] });
+      texts.push({ position: [x, y, top + 12], text: beam.label, size: 13 });
+    });
+
+    if (isMemberRank(volume.timeUnits)) {
+      const z = zOf((0 - t0) / span);
+      const [w, h] = [size[0] / 2, size[1] / 2];
+      paths.push({
+        path: [
+          [-w, -h, z],
+          [w, -h, z],
+          [w, h, z],
+          [-w, h, z],
+          [-w, -h, z],
+        ],
+        color: ink.meanPlane,
+      });
+      texts.push({ position: [w, -h, z + 6], text: 'Ensemble mean', size: 12 });
+    }
+
+    return { paths, lines, texts, dots };
+  }, [clock, beams, volume, size, slices[2], ink]);
+
   const layers = useMemo(
     () => [
-      ...(relief
-        ? (
-            [
-              ['relief-rivers', drapedLines.rivers, [64, 108, 150, 235], 1.1],
-              ['relief-roads', drapedLines.roads, [70, 64, 58, 170], 0.7],
-              ['relief-borders', drapedLines.borders, [30, 34, 42, 230], 1.2],
-            ] as const
-          ).map(
-            ([id, data, color, width]) =>
-              new LineLayer({
-                id,
-                data,
-                getSourcePosition: (d) => d.source,
-                getTargetPosition: (d) => d.target,
-                getColor: color as unknown as [number, number, number, number],
-                getWidth: width,
-                parameters: { depthCompare: 'less-equal', depthWriteEnabled: false },
-                coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
-                pickable: false,
-              }),
-          )
-        : []),
-      relief && !selectionMask && !regionOffset[0] && !regionOffset[1]
+      // Every run must be visible in the member split, so it always uses solid layers.
+      relief && !regionOffset[0] && !regionOffset[1] && !isMemberRank(volume.timeUnits)
         ? new OnionLayer({
             id: 'onion',
             volume,
@@ -819,6 +1060,10 @@ export function Cube({
             uncertainty: volume.uncertainty,
             uncertaintyMode,
             uncertaintyScale,
+            selectionMask,
+            selectionStyle,
+            muted: theme === 'dark' ? [0.16, 0.18, 0.21] : [0.86, 0.88, 0.9],
+            hideMissing: isMemberRank(volume.timeUnits),
             onReady: reportReady,
             pickable: true,
             coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
@@ -830,6 +1075,9 @@ export function Cube({
             volume,
             size,
             selectionMask,
+            selectionStyle,
+            muted: theme === 'dark' ? [0.16, 0.18, 0.21] : [0.86, 0.88, 0.9],
+            hideMissing: isMemberRank(volume.timeUnits),
             regionOffset,
             slices,
             range,
@@ -841,6 +1089,29 @@ export function Cube({
             pickable: true,
             coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
           }),
+      ...(relief
+        ? (
+            [
+              ['relief-rivers', drapedLines.rivers, ink.rivers, 0.6],
+              ['relief-borders', drapedLines.borders, ink.reliefBorders, 0.8],
+            ] as const
+          ).map(
+            ([id, data, color, width]) =>
+              new LineLayer({
+                id,
+                data,
+                getSourcePosition: (d) => d.source,
+                getTargetPosition: (d) => d.target,
+                getColor: color as unknown as [number, number, number, number],
+                getWidth: width,
+                // Drawn after the layers and on top: they lie on the topmost layer, and a depth test
+                // lets the terrain mesh swallow them where interpolation differs slightly.
+                parameters: { depthCompare: 'always', depthWriteEnabled: false },
+                coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+                pickable: false,
+              }),
+          )
+        : []),
       ...[true, false].map(
         (halo) =>
           new LineLayer({
@@ -849,8 +1120,8 @@ export function Cube({
             data: geographicLines,
             getSourcePosition: (d) => d.source,
             getTargetPosition: (d) => d.target,
-            getColor: halo ? [255, 255, 255, 235] : [35, 48, 67, 245],
-            getWidth: halo ? 3 : 1.2,
+            getColor: halo ? ink.outline : ink.border,
+            getWidth: halo ? 2.2 : 0.9,
             parameters: { depthCompare: 'less-equal', depthWriteEnabled: false },
             coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
             pickable: false,
@@ -863,15 +1134,15 @@ export function Cube({
         getPosition: (d) => d.position,
         getText: (d) => d.name,
         getSize: 13,
-        getColor: [39, 42, 49, 255],
+        getColor: ink.placeLabel,
         characterSet: 'auto',
         fontFamily: 'Inter, sans-serif',
         fontWeight: 500,
         fontSettings: { sdf: true, buffer: 8 },
         outlineWidth: 5,
-        outlineColor: [255, 255, 255, 230],
-        // On the relief, labels hide behind the cube instead of floating over the data.
-        parameters: { depthCompare: relief ? 'less-equal' : 'always', depthWriteEnabled: false },
+        outlineColor: ink.outline,
+        // Labels sit on the top layer, so they are always drawn over it.
+        parameters: { depthCompare: 'always', depthWriteEnabled: false },
         billboard: true,
         pickable: false,
         coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
@@ -881,7 +1152,7 @@ export function Cube({
         data: wire,
         getSourcePosition: (d) => d.source as [number, number, number],
         getTargetPosition: (d) => d.target as [number, number, number],
-        getColor: [92, 104, 122, 170],
+        getColor: ink.wire,
         parameters: { depthWriteEnabled: false },
         getWidth: 1,
         coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
@@ -891,7 +1162,7 @@ export function Cube({
         data: axes,
         getSourcePosition: (d) => d.source,
         getTargetPosition: (d) => d.target,
-        getColor: [78, 91, 113, 255],
+        getColor: ink.axis,
         getWidth: 1.4,
         parameters: { depthCompare: 'always', depthWriteEnabled: false },
         coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
@@ -903,25 +1174,86 @@ export function Cube({
         getText: (d) => d.text,
         getSize: (d) => (d.title ? 12 : 10),
         getAngle: (d) =>
-          compact && (d.text === 'Lead time' || d.text === 'Elapsed time') ? 90 : 0,
+          compact && ['Lead time', 'Elapsed time', 'Runs vs average'].includes(d.text) ? 90 : 0,
         getPixelOffset: (d) => {
-          if (d.text === 'Lead time' || d.text === 'Elapsed time')
+          if (['Lead time', 'Elapsed time', 'Runs vs average'].includes(d.text))
             return compact ? [0, 0] : [-35, 0];
           if (/° [EW]$/.test(d.text)) return [-10, 5];
           if (/° [NS]$/.test(d.text)) return [10, 5];
 
           return [0, 0];
         },
-        getColor: [65, 77, 97],
+        getColor: ink.label,
         characterSet: 'auto',
         fontFamily: 'Inter, sans-serif',
         fontWeight: 400,
         background: true,
-        getBackgroundColor: [248, 249, 251, 235],
+        getBackgroundColor: ink.labelBackground,
         backgroundPadding: [3, 2],
         parameters: { depthCompare: 'always', depthWriteEnabled: false },
         billboard: true,
         coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+      }),
+      new PathLayer({
+        id: 'story-paths',
+        data: overlays.paths,
+        getPath: (d) => d.path,
+        getColor: (d) => d.color,
+        getWidth: (d) => (d.color[3] < 230 ? 1.5 : 12),
+        widthUnits: 'pixels',
+        capRounded: false,
+        parameters: { depthCompare: 'less-equal', depthWriteEnabled: false },
+        coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+        pickable: false,
+      }),
+      new LineLayer({
+        id: 'story-lines',
+        data: overlays.lines,
+        getSourcePosition: (d) => d.source,
+        getTargetPosition: (d) => d.target,
+        getColor: ink.marker,
+        getWidth: 3.5,
+        parameters: { depthCompare: 'always', depthWriteEnabled: false },
+        coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+        pickable: false,
+      }),
+      new ScatterplotLayer({
+        id: 'story-dots',
+        // Empty layers can keep stale buffers; hide the layer rather than draw nothing.
+        visible: overlays.dots.length > 0,
+        data: overlays.dots,
+        getPosition: (d) => d.position,
+        getRadius: 9,
+        radiusUnits: 'pixels',
+        billboard: true,
+        stroked: true,
+        filled: true,
+        getFillColor: ink.markerFill,
+        getLineColor: [255, 255, 255, 255],
+        lineWidthUnits: 'pixels',
+        getLineWidth: 3,
+        parameters: { depthCompare: 'always', depthWriteEnabled: false },
+        coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+        pickable: false,
+      }),
+      new TextLayer({
+        id: 'story-text',
+        visible: overlays.texts.length > 0,
+        data: overlays.texts,
+        getPosition: (d) => d.position,
+        getText: (d) => d.text,
+        getSize: (d) => d.size,
+        getColor: ink.label,
+        characterSet: 'auto',
+        fontFamily: 'JetBrains Mono, ui-monospace, monospace',
+        fontWeight: 600,
+        fontSettings: { sdf: true, buffer: 8 },
+        outlineWidth: 6,
+        outlineColor: ink.outline,
+        billboard: true,
+        parameters: { depthCompare: 'always', depthWriteEnabled: false },
+        coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
+        pickable: false,
       }),
       new IconLayer({
         id: 'selected-point',
@@ -939,6 +1271,10 @@ export function Cube({
     [
       relief,
       drapedLines,
+      overlays,
+      ink,
+      theme,
+      selectionStyle,
       volume,
       size,
       selectionMask,
@@ -1125,8 +1461,10 @@ export function Cube({
         disabled={loading || Boolean(displayedRegion)}
         projection={screenProjection}
       />
-      <WorldMinimap extent={displayedRegion || volume.extent} />
+      {minimap && <WorldMinimap extent={displayedRegion || volume.extent} />}
       <CubeToolbar
+        view={view}
+        onView={(v) => onView?.(v)}
         mode={mode}
         onMode={setMode}
         onReset={onReset}
@@ -1138,17 +1476,48 @@ export function Cube({
         onLabels={toggleLabels}
         showRelief={showRelief}
         onRelief={toggleRelief}
+        reliefMenu={
+          <div className="relief-menu">
+            <label className="relief-switch">
+              <input type="checkbox" checked={showRelief} onChange={toggleRelief} />
+              Terrain-shaped layers
+            </label>
+            {showRelief && (
+              <>
+                <label htmlFor="relief-height">Terrain height</label>
+                <select
+                  id="relief-height"
+                  value={String(reliefHeight)}
+                  disabled={!relief}
+                  onChange={(e) =>
+                    setReliefHeight(e.target.value === 'max' ? 'max' : Number(e.target.value))
+                  }
+                >
+                  <option value="1">True scale (×1)</option>
+                  {[2, 5, 10].map((n) => (
+                    <option key={n} value={n} disabled={!!relief && n > relief.max}>
+                      Exaggerated ×{n}
+                    </option>
+                  ))}
+                  <option value="max">Maximum{relief ? ` (×${relief.max})` : ''}</option>
+                </select>
+                <p>
+                  {relief
+                    ? relief.exaggeration === 1
+                      ? 'True scale: mountains are as tall, relative to the map, as in reality, which at this region size is almost flat.'
+                      : `Heights are exaggerated ×${relief.exaggeration} so the terrain is readable; real mountains are ${relief.exaggeration} times flatter.${relief.exaggeration === relief.max ? ' This is the most the layers allow without touching each other.' : ''}`
+                    : reliefError
+                      ? `Terrain unavailable: ${reliefError}`
+                      : 'Loading terrain…'}
+                  {relief &&
+                    ` ${relief.sheets.length} of ${volume.times.length} forecast times are drawn as layers; the sea is drawn flat.`}
+                </p>
+                <p className="relief-sources">{TERRAIN_ATTRIBUTION}. Rivers: Natural Earth.</p>
+              </>
+            )}
+          </div>
+        }
       />
-      {showRelief && (
-        <p className="relief-caption">
-          {relief
-            ? `Each layer is one forecast time (${relief.sheets.length} of ${volume.times.length} shown), bent by the terrain: heights ×${relief.exaggeration}, kept below the gap between layers; sea drawn flat. `
-            : reliefError
-              ? `Relief unavailable: ${reliefError} `
-              : 'Loading relief… '}
-          <span>{TERRAIN_ATTRIBUTION}; rivers, roads: Natural Earth.</span>
-        </p>
-      )}
       {hover && mode !== 'slice' ? (
         <div className="hover-inspector">
           <span>{formatLatLon(volume.lat[hover.y], volume.lon[hover.x])}</span>

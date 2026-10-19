@@ -195,7 +195,13 @@ export function onionScale(grid: ElevationGrid, cubeHeight: number, cubeDepth: n
   const unitsPerMetre = amplitude / Math.max(500, grid.max);
   const ground = cubeDepth / (Math.abs(grid.region.north - grid.region.south) * METRES_PER_DEGREE);
 
-  return { amplitude, unitsPerMetre, exaggeration: Math.round(unitsPerMetre / ground) };
+  return {
+    amplitude,
+    unitsPerMetre,
+    exaggeration: Math.round(unitsPerMetre / ground),
+    /** Cube units per metre at true scale (×1), from the north–south ground distance. */
+    ground,
+  };
 }
 
 /** Cube-space position on a sheet whose sea level sits at height `z`. */

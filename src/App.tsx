@@ -1,6 +1,6 @@
 import { remapSlices } from './render/slice-remap';
 import { snowfallExample, isSnowfallExample } from './engine/examples';
-import { isWinterTime, timeLabel } from './engine/time-labels';
+import { isWinterTime, timeLabel, timeValue } from './engine/time-labels';
 import { squareExtent } from './engine/square-extent';
 import { RegionDialog } from './components/RegionDialog';
 import { valueRange, formatValue } from './render/value-scale';
@@ -25,6 +25,8 @@ import {
   AlertCircle,
   Search,
   X,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { Command } from 'cmdk';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
@@ -44,6 +46,59 @@ import { useNormals } from './analysis/useNormals';
 import { EnsembleControls, type UncertaintyMode } from './components/EnsembleControls';
 import { NormalsControls } from './components/NormalsControls';
 import { isAvailableForecast as isComparableForecast } from './engine/dataset-support';
+import { dynamicalCatalogUrl } from './engine/config';
+import type { Reference } from './engine/derive';
+import type { DisplayVolume } from './engine/derive';
+import { rowAreas } from './analysis/area';
+import {
+  certainPlaces,
+  eventSites,
+  meanSpread,
+  memberSplit,
+  regionalMeans,
+  reliableHorizon,
+} from './analysis/story';
+import { loadPlaces, placesInRegion, type Place } from './render/places';
+import { Figures, StoryPanel, StoryTicks, type SectionId } from './story/StoryPanel';
+import type { Beam, ClockSpec } from './components/Cube';
+import { CubeToolbar, type ViewMode } from './components/CubeToolbar';
+import { RadialView } from './components/RadialView';
+import { RegionPicker } from './components/RegionPicker';
+import { CubeLoader } from './components/CubeLoader';
+import { radialSpec } from './story/radial';
+
+/** The story opens on an ensemble so every question can be answered. */
+const STORY_DATASET = dynamicalCatalogUrl
+  ? new URL('noaa-gefs-forecast-35-day/collection.json', dynamicalCatalogUrl).href
+  : '';
+
+const pretty = (u: string) => (u === 'degree_Celsius' ? '°C' : u);
+
+/** The clock's answer: the current regional average and the extremes, with their times. */
+function clockFigures(
+  means: ArrayLike<number>,
+  volume: DisplayVolume,
+  now: number,
+): [string, string][] {
+  const show = (v: number) =>
+    volume.quantity.kind === 'share'
+      ? `${Math.round(v * 100)} %`
+      : `${formatValue(v)} ${volume.quantity.units}`;
+  let lo = -1,
+    hi = -1;
+  for (let i = 0; i < means.length; i++) {
+    if (!Number.isFinite(means[i])) continue;
+    if (lo < 0 || means[i] < means[lo]) lo = i;
+    if (hi < 0 || means[i] > means[hi]) hi = i;
+  }
+  const at = (i: number) => timeLabel(volume.times[i], volume.timeUnits);
+
+  return [
+    [show(means[now]), `regional average at ${at(now)}`],
+    ...(hi >= 0 ? ([[show(means[hi]), `highest, at ${at(hi)}`]] as [string, string][]) : []),
+    ...(lo >= 0 ? ([[show(means[lo]), `lowest, at ${at(lo)}`]] as [string, string][]) : []),
+  ];
+}
 
 const DEFAULT_EXTENT: Extent = [-25, 34, 45, 72];
 
@@ -146,12 +201,58 @@ export default function App() {
   const [display, setDisplayState] = useState<Display>(defaultDisplay),
     [uncertaintyMode, setUncertaintyMode] = useState<UncertaintyMode>('suppress'),
     [uncertaintyScale, setUncertaintyScale] = useState(1);
-  const normals = useNormals(meta, volume, display.reference !== 'forecast');
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try {
+      return localStorage.getItem('zarr-sql-views-theme') === 'dark' ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  });
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem('zarr-sql-views-theme', theme);
+    } catch {}
+  }, [theme]);
+
+  const [section, setSection] = useState<SectionId>('forecast'),
+    [jump, setJump] = useState<{ id: SectionId; n: number } | null>(null),
+    [normalReference, setNormalReference] = useState<Reference>('anomaly'),
+    [selectionStyle, setSelectionStyle] = useState<'isolate' | 'paint'>('paint'),
+    [trustThreshold, setTrustThreshold] = useState(2),
+    [certaintyView, setCertaintyView] = useState<'disagreement' | 'trust'>('disagreement'),
+    [placeCount, setPlaceCount] = useState(6),
+    [viewMode, setViewMode] = useState<ViewMode>('cube'),
+    [arrangement, setArrangement] = useState<'map' | 'mix'>('map'),
+    [pendingExtent, setPendingExtent] = useState<Extent | null>(null);
+  const isTrust = section === 'certainty' && certaintyView === 'trust';
+  const jumpTo = useCallback((id: SectionId) => setJump((j) => ({ id, n: (j?.n ?? 0) + 1 })), []);
+  const normals = useNormals(meta, volume, section === 'normal' && normalReference !== 'forecast');
+
+  /** Each section shows the quantity its question is about. */
+  const effectiveDisplay = useMemo<Display>(() => {
+    const plain = display.statistic === 'share' ? 'mean' : display.statistic;
+    switch (section) {
+      case 'certainty':
+        return { ...display, reference: 'forecast' };
+      case 'normal':
+        return { ...display, reference: normalReference };
+      case 'persistent':
+      case 'sql':
+        return {
+          ...display,
+          statistic: plain,
+          reference: normals.current ? normalReference : 'forecast',
+        };
+      default:
+        return { ...display, statistic: 'mean', reference: 'forecast' };
+    }
+  }, [section, display, normalReference, normals.current]);
 
   /** The cube, legend, SQL and point panel all read this one derived volume. */
   const displayVolume = useMemo(
-    () => (volume ? deriveVolume(volume, display, normals.normals) : null),
-    [volume, display, normals.normals],
+    () => (volume ? deriveVolume(volume, effectiveDisplay, normals.normals) : null),
+    [volume, effectiveDisplay, normals.normals],
   );
 
   const setDisplay = (next: Display) => {
@@ -223,6 +324,8 @@ export default function App() {
       .sort((a, b) => a - b);
     const p75 = finite[Math.floor(finite.length * 0.75)] ?? 1;
     setUncertaintyScale(p75 > 0 ? Number(p75.toPrecision(1)) : 1);
+    if (displayVolume?.quantity.units === displayVolume?.sourceUnits || p75 > 0)
+      setTrustThreshold(p75 > 0 ? Number(p75.toPrecision(1)) : 1);
   }, [scaleKey]);
 
   useEffect(() => {
@@ -405,6 +508,8 @@ export default function App() {
 
   const [catalog, setCatalog] = useState<{ title: string; choices: CatalogChoice[] } | null>(null);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  /** The first open runs behind the landing loader, not the dataset dialog. */
+  const [booting, setBooting] = useState(true);
   const [catalogError, setCatalogError] = useState('');
   const catalogRequest = useRef(0);
 
@@ -420,6 +525,7 @@ export default function App() {
         const result = await readCatalog(options.url);
         if (request !== catalogRequest.current) return;
         setCatalogLoading(false);
+        setBooting(false);
         if (result)
           setCatalog({
             ...result,
@@ -435,6 +541,7 @@ export default function App() {
       } catch (error) {
         if (request !== catalogRequest.current) return;
         setCatalogLoading(false);
+        setBooting(false);
         setCatalogError((error as Error).message);
       }
     },
@@ -444,6 +551,8 @@ export default function App() {
   useEffect(() => {
     if (initialParams.has('dataset'))
       open({ url, variable: initialParams.get('variable') || undefined }, initialExtent);
+    else if (STORY_DATASET) open({ url: STORY_DATASET }, initialExtent);
+    else setBooting(false);
 
     return () => {
       catalogRequest.current++;
@@ -556,15 +665,16 @@ export default function App() {
   );
 
   /** An applied SQL filter draws only matching cells; say why the cube is empty. */
-  const filterNotice = !analysis.matches
-    ? ''
-    : analysis.error
-      ? `The SQL filter failed, so no cells are drawn: ${analysis.error}`
-      : analysis.status || analysis.runtime?.volume !== displayVolume
-        ? 'Applying the SQL filter to this view…'
-        : analysis.matches.count === 0
-          ? 'No cells match the SQL filter in this view, so the cube is empty.'
-          : '';
+  const filterNotice =
+    !(section === 'persistent' || section === 'sql') || !analysis.matches
+      ? ''
+      : analysis.error
+        ? `The SQL filter failed, so no cells are drawn: ${analysis.error}`
+        : analysis.status || analysis.runtime?.volume !== displayVolume
+          ? 'Applying the SQL filter to this view…'
+          : analysis.matches.count === 0
+            ? 'No cells match the SQL filter in this view, so the cube is empty.'
+            : '';
 
   const plotted = useMemo(
     () =>
@@ -577,6 +687,290 @@ export default function App() {
         : [],
     [selectedForecasts, displayVolume, display, normals.normals],
   );
+
+  // ---- Story views -------------------------------------------------------------------
+  const split = useMemo(
+    () => (section === 'members' && volume?.ensemble ? memberSplit(volume, slices[2]) : null),
+    [section, volume, slices[2]],
+  );
+  const memberVolume = useMemo<DisplayVolume | null>(
+    () =>
+      split && volume
+        ? {
+            ...split.volume,
+            quantity: {
+              label: `Each run minus the ensemble mean at ${timeLabel(volume.times[slices[2]], volume.timeUnits)}`,
+              units: pretty(volume.units),
+              kind: 'anomaly',
+            },
+            sourceUnits: pretty(volume.units),
+            columns: {},
+          }
+        : null,
+    [split, volume],
+  );
+  const memberRange = useMemo<[number, number]>(() => {
+    if (!split) return [-1, 1];
+    const limit = valueRange(
+      0,
+      Math.max(Math.abs(split.volume.min), Math.abs(split.volume.max)),
+    )[1];
+
+    return [-limit, limit];
+  }, [split]);
+
+  const clockMeans = useMemo(
+    () => (section === 'clock' && displayVolume ? regionalMeans(displayVolume) : null),
+    [section, displayVolume],
+  );
+  const clock = useMemo<ClockSpec | null>(
+    () =>
+      clockMeans && displayVolume
+        ? {
+            values: clockMeans,
+            current: slices[2],
+            range,
+            palette,
+            format: (v) =>
+              displayVolume.quantity.kind === 'share'
+                ? `${Math.round(v * 100)} %`
+                : `${formatValue(v)} ${displayVolume.quantity.units}`,
+          }
+        : null,
+    [clockMeans, displayVolume, slices[2], range, palette],
+  );
+
+  const [places, setPlaces] = useState<Place[]>([]);
+  useEffect(() => {
+    loadPlaces()
+      .then(setPlaces)
+      .catch(() => setPlaces([]));
+  }, []);
+  const horizon = useMemo(
+    () => (isTrust && volume?.ensemble ? reliableHorizon(volume, trustThreshold) : null),
+    [isTrust, volume, trustThreshold],
+  );
+  const spreadMean = useMemo(
+    () => (isTrust && volume?.ensemble ? meanSpread(volume) : null),
+    [isTrust, volume],
+  );
+  const trust = useMemo(() => {
+    if (!horizon || !volume) return null;
+    const [nt, ny, nx] = volume.shape;
+    const lo = Math.min(volume.lat[0], volume.lat.at(-1)!),
+      hi = Math.max(volume.lat[0], volume.lat.at(-1)!);
+    const west = volume.lon[0],
+      east = west + ((volume.lon.at(-1)! - west + 360) % 360);
+    const ranked = certainPlaces(
+      placesInRegion(places, [west, lo, east, hi]),
+      volume,
+      horizon,
+      placeCount,
+      spreadMean,
+    );
+    const hours = volume.times.map((v) => timeValue(v, volume.timeUnits));
+    const mask = new Uint8Array(nt * ny * nx);
+    for (let t = 0; t < nt; t++)
+      for (let i = 0; i < ny * nx; i++) if (hours[t] <= horizon[i]) mask[t * ny * nx + i] = 255;
+    const rows = rowAreas(volume.lat, volume.lon);
+    let total = 0,
+      fiveDays = 0;
+    const sorted: number[] = [];
+    for (let i = 0; i < ny * nx; i++) {
+      const a = Number.isFinite(rows[Math.floor(i / nx)]) ? rows[Math.floor(i / nx)] : 1;
+      if (!Number.isFinite(volume.data[i])) continue;
+      total += a;
+      const h = Number.isFinite(horizon[i]) ? horizon[i] : -1;
+      if (h >= 120) fiveDays += a;
+      sorted.push(h);
+    }
+    sorted.sort((a, b) => a - b);
+
+    return {
+      ranked,
+      mask,
+      median: sorted[Math.floor(sorted.length / 2)] ?? NaN,
+      fiveDayShare: total ? fiveDays / total : NaN,
+    };
+  }, [horizon, volume, places, placeCount, spreadMean]);
+  const beams = useMemo<Beam[]>(
+    () =>
+      trust?.ranked.map((p) => ({
+        x: p.x,
+        y: p.y,
+        hours: p.hours,
+        label: `${p.name} +${p.hours} h`,
+      })) ?? [],
+    [trust],
+  );
+
+  const enableAnalysis = useCallback(() => setAnalysisEnabled(true), []);
+
+  const needsEnsemble = (
+    <div className="story-needs">
+      <p>This question needs an ensemble: the same forecast run many times.</p>
+      <Button variant="primary" onClick={() => open({ url: STORY_DATASET })}>
+        Open the NOAA GEFS ensemble
+      </Button>
+    </div>
+  );
+
+  const layerStats = useMemo(() => {
+    if (!displayVolume) return null;
+    const [, ny, nx] = displayVolume.shape;
+    let lo = Infinity,
+      hi = -Infinity;
+    for (let i = 0; i < ny * nx; i++) {
+      const v = displayVolume.data[slices[2] * ny * nx + i];
+      if (Number.isFinite(v)) {
+        lo = Math.min(lo, v);
+        hi = Math.max(hi, v);
+      }
+    }
+    const u = displayVolume.quantity.units;
+
+    return {
+      when: timeLabel(displayVolume.times[slices[2]], displayVolume.timeUnits),
+      range: Number.isFinite(lo) ? `${formatValue(lo)} … ${formatValue(hi)} ${u}` : '—',
+    };
+  }, [displayVolume, slices[2]]);
+
+  const agreement = useMemo(() => {
+    const u = displayVolume?.uncertainty;
+    if (!u || !displayVolume) return null;
+    const [, ny, nx] = displayVolume.shape;
+    const rows = rowAreas(displayVolume.lat, displayVolume.lon);
+    let total = 0,
+      agree = 0;
+    for (let i = 0; i < ny * nx; i++) {
+      const s = u[slices[2] * ny * nx + i];
+      if (!Number.isFinite(s)) continue;
+      const a = Number.isFinite(rows[Math.floor(i / nx)]) ? rows[Math.floor(i / nx)] : 1;
+      total += a;
+      if (s < uncertaintyScale / 3) agree += a;
+    }
+
+    return {
+      share: total ? `${Math.round((agree / total) * 100)} %` : '—',
+      when: timeLabel(displayVolume.times[slices[2]], displayVolume.timeUnits),
+    };
+  }, [displayVolume, slices[2], uncertaintyScale]);
+
+  /** Beams through the places where the found event lasts longest; they follow the filter. */
+  const eventBeams = useMemo<Beam[]>(() => {
+    const mask = analysis.matches?.mask;
+    if (section !== 'persistent' || !mask || !analysis.matches?.count || !displayVolume) return [];
+    const v = displayVolume;
+    const nearestPlace = (x: number, y: number) => {
+      let best: Place | null = null,
+        distance = Infinity;
+      for (const p of places) {
+        const d = Math.hypot(((p.lon - v.lon[x] + 540) % 360) - 180, p.lat - v.lat[y]);
+        if (d < distance) {
+          distance = d;
+          best = p;
+        }
+      }
+      const step = Math.abs(v.lat[1] - v.lat[0]) || 0.25;
+
+      return best && distance <= step * 3 ? best.name : null;
+    };
+
+    return eventSites(v, mask, 4, Math.max(6, Math.round(v.shape[2] / 3.5))).map((site) => ({
+      x: site.x,
+      y: site.y,
+      from: site.from,
+      hours: site.to,
+      label: `${nearestPlace(site.x, site.y) ?? `${v.lat[site.y].toFixed(1)}°, ${v.lon[site.x].toFixed(1)}°`} · ${site.hours >= 48 ? `${formatValue(site.hours / 24)} d` : `${site.hours} h`}`,
+    }));
+  }, [section, analysis.matches, displayVolume, places]);
+
+  /** The flat radial view answers the same question as the cube for every section. */
+  const radial = useMemo(
+    () =>
+      viewMode === 'radial' && volume && displayVolume
+        ? radialSpec({
+            section,
+            certaintyView,
+            volume,
+            display: displayVolume,
+            t: Math.min(slices[2], displayVolume.shape[0] - 1),
+            palette,
+            range,
+            memberRange,
+            uncertainty: {
+              mode:
+                display.statistic === 'mean' || display.statistic === 'median'
+                  ? uncertaintyMode
+                  : 'off',
+              scale: uncertaintyScale,
+            },
+            normals: normals.current ? normals.normals : null,
+            reference: normalReference,
+            horizon,
+            mask: analysis.matches?.mask ?? null,
+            muted: theme === 'dark' ? [0.16, 0.18, 0.21] : [0.86, 0.88, 0.9],
+            arrangement,
+          })
+        : null,
+    [
+      viewMode,
+      volume,
+      displayVolume,
+      section,
+      certaintyView,
+      slices[2],
+      palette,
+      range,
+      memberRange,
+      display.statistic,
+      uncertaintyMode,
+      uncertaintyScale,
+      normals.current,
+      normals.normals,
+      normalReference,
+      horizon,
+      analysis.matches,
+      theme,
+      arrangement,
+    ],
+  );
+
+  useEffect(() => setPendingExtent(null), [extent, regionFailure]);
+  /** Move to a new region from the location widget (both views). */
+  const moveTo = (next: Extent) => {
+    if (!meta) return;
+    try {
+      setPendingExtent(squareExtent(next));
+    } catch {
+      setPendingExtent(null);
+    }
+    load(meta, variable, init, next, true);
+  };
+  const blocks = message.match(/Loaded (\d+) of (\d+)/);
+  const locationStatus = regionFailure
+    ? regionFailure.message
+    : pendingExtent && busy
+      ? blocks
+        ? `Loading new region · ${blocks[1]} of ${blocks[2]} blocks`
+        : 'Loading new region…'
+      : '';
+  /** Pinned points, as cells of the loaded region, for the flat view. */
+  const radialPins = useMemo(
+    () =>
+      displayVolume
+        ? selectedForecasts.map((p) => ({ ...anchoredCell(p, displayVolume), color: p.color }))
+        : [],
+    [selectedForecasts, displayVolume],
+  );
+
+  const showsSelection = section === 'persistent' || section === 'sql';
+  const cubeMask = isTrust
+    ? (trust?.mask ?? null)
+    : showsSelection
+      ? (analysis.matches?.mask ?? null)
+      : null;
+  const cubeVolume = memberVolume ?? displayVolume;
 
   const selectedCells = useMemo(
     () =>
@@ -615,30 +1009,39 @@ export default function App() {
   return (
     <TooltipProvider delayDuration={300}>
       <div className="app-shell">
-        <header className="app-bar">
-          <div className="header-identity">
-            <a href="/" className="brand" aria-label="zarr-sql-views home">
-              <span>zarr-sql-views</span>
-            </a>
-            {meta && (
-              <div className="header-context" title={meta.title}>
-                {meta.title}
-              </div>
-            )}
-          </div>
-          <div className="bar-actions">
-            <Button variant="ghost" onClick={() => open({ url: AIFS })}>
-              <FolderOpen size={15} />
-              <span>Open dataset</span>
-            </Button>
-          </div>
-        </header>
+        {!meta && (
+          <header className="app-bar">
+            <div className="header-identity">
+              <a href="/" className="brand" aria-label="zarr-sql-views home">
+                <span>3D Forecast</span>
+              </a>
+            </div>
+            <div className="bar-actions">
+              <Tip label={theme === 'dark' ? 'Use the light theme' : 'Use the dark theme'}>
+                <Button
+                  variant="ghost"
+                  className="icon"
+                  aria-label={theme === 'dark' ? 'Use the light theme' : 'Use the dark theme'}
+                  aria-pressed={theme === 'dark'}
+                  onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+                >
+                  {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+                </Button>
+              </Tip>
+              <Button variant="ghost" onClick={() => open({ url: AIFS })}>
+                <FolderOpen size={15} />
+                <span>Open dataset</span>
+              </Button>
+            </div>
+          </header>
+        )}
         <OnboardingTour ready={!!volume && !busy} prepare={prepareTour} />
-        {busy && !volume && (
+        {(busy || (booting && catalogLoading)) && !volume && (
           <div className="dataset-loading-overlay">
             <div className="loading-state" role="status">
+              <CubeLoader size={104} />
               <div className="loading-caption">
-                <span>Loading dataset</span>
+                <span>{meta ? 'Loading the forecast' : 'Connecting to the dataset'}</span>
                 <Button
                   variant="ghost"
                   className="icon"
@@ -662,6 +1065,7 @@ export default function App() {
                     : undefined
                 }
               />
+              <small className="loading-step">{message}</small>
             </div>
           </div>
         )}
@@ -679,6 +1083,7 @@ export default function App() {
                   <PanelLeft size={19} />
                 </Button>
               </Tip>
+              <StoryTicks active={section} onJump={jumpTo} />
             </nav>
           )}
           <Group orientation="horizontal" className="workbench">
@@ -688,206 +1093,440 @@ export default function App() {
                 panelRef={sidebarPanel}
                 collapsible
                 collapsedSize="0px"
-                defaultSize="280px"
-                minSize="260px"
-                maxSize="340px"
+                defaultSize="380px"
+                minSize="320px"
+                maxSize="460px"
                 onResize={(size) => {
                   if (!narrow) setSidebar(size.inPixels > 0);
                 }}
               >
                 <aside className="sidebar" inert={!sidebar} aria-hidden={!sidebar}>
-                  <div className="sidebar-content">
-                    <div className="control-section dataset-controls">
-                      {meta && !meta.axes.init && !isWinterTime(meta.timeUnits) && (
-                        <p className="analysis-window-note">
-                          Most recent {meta.times.length} time samples
-                        </p>
-                      )}
-                      <label htmlFor="data-variable">Variable</label>
-                      <select
-                        id="data-variable"
-                        value={variable}
-                        disabled={!meta || busy}
-                        onChange={(e) => {
-                          setVariable(e.target.value);
-                          if (meta) {
-                            if (isSnowfallExample(meta.url))
-                              openStore({ url: meta.url, variable: e.target.value }, extent);
-                            else load(meta, e.target.value, init, extent);
-                          }
-                        }}
-                      >
-                        {meta?.variables.map((v) => (
-                          <option
-                            key={v.name}
-                            value={v.name}
-                            disabled={!!v.disabledReason}
-                            title={v.disabledReason}
+                  <StoryPanel
+                    active={section}
+                    onActive={setSection}
+                    jump={jump}
+                    topbar={
+                      <>
+                        <p className="story-brand">3D Forecast</p>
+                        <div className="story-actions">
+                          <Tip
+                            label={theme === 'dark' ? 'Use the light theme' : 'Use the dark theme'}
                           >
-                            {v.label}
-                          </option>
-                        ))}
-                      </select>
-                      {meta?.axes.init && (
+                            <Button
+                              variant="ghost"
+                              className="icon"
+                              aria-label={
+                                theme === 'dark' ? 'Use the light theme' : 'Use the dark theme'
+                              }
+                              aria-pressed={theme === 'dark'}
+                              onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+                            >
+                              {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+                            </Button>
+                          </Tip>
+                          <Button variant="ghost" onClick={() => open({ url: AIFS })}>
+                            <FolderOpen size={15} />
+                            <span>Open dataset</span>
+                          </Button>
+                        </div>
+                      </>
+                    }
+                    header={
+                      <>
+                        <h1>{meta?.title ?? 'Loading forecast…'}</h1>
+                        <p className="story-lede">
+                          Scroll through the questions. Each one turns the cube into the view that
+                          answers it, with its own controls.
+                        </p>
+                      </>
+                    }
+                    footer={
+                      <div className="story-footer">
+                        <Button variant="ghost" onClick={() => setDiagnostics(true)}>
+                          Dataset details
+                        </Button>
+                      </div>
+                    }
+                  >
+                    {{
+                      forecast: (
                         <>
-                          <label htmlFor="initialization">Forecast run</label>
-                          <RunPicker
-                            options={initializationOptions}
-                            value={init}
-                            disabled={!meta || busy}
-                            onChange={(i) => {
-                              setRunNotice('');
-                              setInit(i);
-                              if (meta) load(meta, variable, i, extent);
-                            }}
+                          <div className="control-section dataset-controls">
+                            {meta && !meta.axes.init && !isWinterTime(meta.timeUnits) && (
+                              <p className="analysis-window-note">
+                                Most recent {meta.times.length} time samples
+                              </p>
+                            )}
+                            <label htmlFor="data-variable">Variable</label>
+                            <select
+                              id="data-variable"
+                              value={variable}
+                              disabled={!meta || busy}
+                              onChange={(e) => {
+                                setVariable(e.target.value);
+                                if (meta) {
+                                  if (isSnowfallExample(meta.url))
+                                    openStore({ url: meta.url, variable: e.target.value }, extent);
+                                  else load(meta, e.target.value, init, extent);
+                                }
+                              }}
+                            >
+                              {meta?.variables.map((v) => (
+                                <option
+                                  key={v.name}
+                                  value={v.name}
+                                  disabled={!!v.disabledReason}
+                                  title={v.disabledReason}
+                                >
+                                  {v.label}
+                                </option>
+                              ))}
+                            </select>
+                            {meta?.axes.init && (
+                              <>
+                                <label htmlFor="initialization">Forecast run</label>
+                                <RunPicker
+                                  options={initializationOptions}
+                                  value={init}
+                                  disabled={!meta || busy}
+                                  onChange={(i) => {
+                                    setRunNotice('');
+                                    setInit(i);
+                                    if (meta) load(meta, variable, i, extent);
+                                  }}
+                                />
+                              </>
+                            )}
+                            {runNotice && <p className="field-note run-note">{runNotice}</p>}
+                            {volume?.note && <p className="field-note run-note">{volume.note}</p>}
+                          </div>
+                          {displayVolume ? (
+                            <div className="control-section">
+                              {' '}
+                              <div className="legend">
+                                <div>
+                                  <span>
+                                    Color scale
+                                    <small className="legend-quantity">
+                                      {displayVolume.quantity.label}
+                                    </small>
+                                  </span>
+                                  <Popover
+                                    trigger={
+                                      <Button
+                                        variant="ghost"
+                                        className="icon"
+                                        aria-label="Color settings"
+                                      >
+                                        <Settings2 size={14} />
+                                      </Button>
+                                    }
+                                  >
+                                    <label>
+                                      Color palette
+                                      <select
+                                        aria-label="Color palette"
+                                        value={palette}
+                                        onChange={(e) => {
+                                          const next = e.target.value as Palette;
+                                          setPalette(next);
+                                          if (next === 'snowfall') {
+                                            const limit = Math.max(
+                                              Math.abs(range[0]),
+                                              Math.abs(range[1]),
+                                            );
+
+                                            setRange([-limit, limit]);
+                                          }
+                                        }}
+                                      >
+                                        <option value="snowfall">
+                                          Snowfall anomaly (brown–white–blue)
+                                        </option>
+                                        <option value="balance">Diverging (blue–white–red)</option>
+                                        <option value="viridis">Viridis</option>
+                                        <option value="thermal">Thermal</option>
+                                        <option value="ocean">Ocean</option>
+                                        <option value="ember">Ember</option>
+                                      </select>
+                                    </label>
+                                    <div className="range-fields">
+                                      <label>
+                                        Minimum
+                                        <input
+                                          aria-label="Color minimum"
+                                          type="number"
+                                          value={range[0]}
+                                          step="any"
+                                          onChange={(e) => {
+                                            const n = Number(e.target.value);
+                                            if (palette === 'snowfall') {
+                                              if (n < 0) setRange([n, -n]);
+                                            } else if (n < range[1]) setRange([n, range[1]]);
+                                          }}
+                                        />
+                                      </label>
+                                      <label>
+                                        Maximum
+                                        <input
+                                          aria-label="Color maximum"
+                                          type="number"
+                                          value={range[1]}
+                                          step="any"
+                                          onChange={(e) => {
+                                            const n = Number(e.target.value);
+                                            if (palette === 'snowfall') {
+                                              if (n > 0) setRange([-n, n]);
+                                            } else if (n > range[0]) setRange([range[0], n]);
+                                          }}
+                                        />
+                                      </label>
+                                    </div>
+                                  </Popover>
+                                </div>
+                                <div
+                                  className="color-bar"
+                                  style={{ background: gradient(palette) }}
+                                />
+                                <div className="legend-numbers">
+                                  <span>
+                                    {displayVolume.min < range[0] ? '≤ ' : ''}
+                                    {legendValue(range[0], displayVolume.quantity.kind)}{' '}
+                                    {legendUnits(displayVolume.quantity)}
+                                  </span>
+                                  <span>
+                                    {legendValue(
+                                      (range[0] + range[1]) / 2,
+                                      displayVolume.quantity.kind,
+                                    )}
+                                  </span>
+                                  <span>
+                                    {displayVolume.max > range[1] ? '≥ ' : ''}
+                                    {legendValue(range[1], displayVolume.quantity.kind)}{' '}
+                                    {legendUnits(displayVolume.quantity)}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          ) : null}
+                          {layerStats && (
+                            <Figures
+                              items={[
+                                [layerStats.when, 'Top layer'],
+                                [layerStats.range, 'Lowest to highest in view'],
+                              ]}
+                            />
+                          )}
+                        </>
+                      ),
+                      certainty: volume?.ensemble ? (
+                        <>
+                          <div
+                            className="segmented two"
+                            role="radiogroup"
+                            aria-label="Certainty view"
+                          >
+                            {(
+                              [
+                                ['disagreement', 'Disagreement'],
+                                ['trust', 'Trust horizon'],
+                              ] as const
+                            ).map(([value, label]) => (
+                              <button
+                                key={value}
+                                role="radio"
+                                aria-checked={certaintyView === value}
+                                className={certaintyView === value ? 'selected' : ''}
+                                onClick={() => setCertaintyView(value)}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                          {certaintyView === 'disagreement' && displayVolume ? (
+                            <>
+                              <EnsembleControls
+                                volume={displayVolume}
+                                display={display}
+                                onDisplay={setDisplay}
+                                mode={uncertaintyMode}
+                                onMode={setUncertaintyMode}
+                                scale={uncertaintyScale}
+                                onScale={setUncertaintyScale}
+                                palette={palette}
+                                range={range}
+                                normalsReady={false}
+                              />
+                              {agreement && (
+                                <Figures
+                                  items={[
+                                    [agreement.share, 'of the region where runs agree now'],
+                                    [agreement.when, 'Top layer'],
+                                  ]}
+                                />
+                              )}
+                            </>
+                          ) : trust ? (
+                            <>
+                              <div className="inline-field">
+                                <label htmlFor="trust-threshold">
+                                  Trust while runs differ by less than
+                                </label>
+                                <input
+                                  id="trust-threshold"
+                                  type="number"
+                                  min={0}
+                                  step="any"
+                                  value={trustThreshold}
+                                  onChange={(e) => {
+                                    const n = Number(e.target.value);
+                                    if (Number.isFinite(n) && n > 0) setTrustThreshold(n);
+                                  }}
+                                />
+                                <span className="threshold-units">{pretty(volume.units)}</span>
+                              </div>
+                              <Figures
+                                items={[
+                                  [
+                                    Number.isFinite(trust.median) && trust.median >= 0
+                                      ? `+${trust.median} h`
+                                      : '—',
+                                    'typical trust horizon',
+                                  ],
+                                  [
+                                    Number.isFinite(trust.fiveDayShare)
+                                      ? `${Math.round(trust.fiveDayShare * 100)} %`
+                                      : '—',
+                                    'of the area trustworthy for 5+ days',
+                                  ],
+                                ]}
+                              />
+                              <div className="story-list-heading">
+                                <span>Most certain places</span>
+                                <select
+                                  aria-label="Number of places"
+                                  value={placeCount}
+                                  onChange={(e) => setPlaceCount(Number(e.target.value))}
+                                >
+                                  {[3, 6, 10, 15].map((n) => (
+                                    <option key={n} value={n}>
+                                      Top {n}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                              <ol className="story-ranking">
+                                {trust.ranked.map((p) => (
+                                  <li key={`${p.name}-${p.x}-${p.y}`}>
+                                    <span>{p.name}</span>
+                                    <b>+{p.hours} h</b>
+                                  </li>
+                                ))}
+                                {!trust.ranked.length && (
+                                  <li className="field-note">
+                                    No named place stays below this spread.
+                                  </li>
+                                )}
+                              </ol>
+                              <p className="field-note">
+                                Trust horizon = the last lead time before the runs’ standard
+                                deviation first reaches the threshold. Beams rise to it; above it
+                                the cube turns grey.
+                              </p>
+                            </>
+                          ) : null}
+                        </>
+                      ) : (
+                        needsEnsemble
+                      ),
+                      members:
+                        split && volume ? (
+                          <>
+                            <p className="field-note">
+                              Move the timeline to choose the moment. Layers are ranked by their
+                              area-weighted difference from the average.
+                            </p>
+                            <div className="legend story-legend">
+                              <div
+                                className="color-bar"
+                                style={{ background: gradient('balance') }}
+                              />
+                              <div className="legend-numbers">
+                                <span>
+                                  {formatValue(memberRange[0])} {pretty(volume.units)}
+                                </span>
+                                <span>0 = average</span>
+                                <span>+{formatValue(memberRange[1])}</span>
+                              </div>
+                            </div>
+                            <Figures
+                              items={[
+                                [String(split.above), 'runs above average'],
+                                [String(split.below), 'runs below average'],
+                                [
+                                  `${split.deviation.at(-1)! > 0 ? '+' : ''}${formatValue(split.deviation.at(-1)!)}`,
+                                  `warmest run (member ${volume.ensemble!.labels[split.order.at(-1)!]})`,
+                                ],
+                                [
+                                  formatValue(split.deviation[0]),
+                                  `coldest run (member ${volume.ensemble!.labels[split.order[0]]})`,
+                                ],
+                              ]}
+                            />
+                          </>
+                        ) : volume?.ensemble ? (
+                          <p className="field-note">Scroll here to split the runs.</p>
+                        ) : (
+                          needsEnsemble
+                        ),
+                      normal:
+                        displayVolume && meta ? (
+                          <NormalsControls
+                            handle={normals}
+                            reference={normalReference}
+                            onReference={setNormalReference}
+                            units={displayVolume.sourceUnits}
+                            canCompare={!!meta.axes.init && isComparableForecast(meta.url)}
+                            unavailableReason="Normals are available for the GFS, GEFS and ECMWF IFS ENS forecasts, which share the 0.25° grid of the NOAA GEFS analysis archive."
+                          />
+                        ) : null,
+                      persistent: displayVolume ? (
+                        <>
+                          {!normals.current && (
+                            <p className="field-note">
+                              Build normals in the previous section to search on anomalies too.
+                            </p>
+                          )}
+                          <AnalysisControls
+                            part="events"
+                            volume={displayVolume}
+                            analysis={analysis}
+                            slices={slices}
+                            onReveal={updateSlices}
+                            onEnable={enableAnalysis}
+                            selectionStyle={selectionStyle}
+                            onSelectionStyle={setSelectionStyle}
                           />
                         </>
-                      )}
-                      {runNotice && <p className="field-note run-note">{runNotice}</p>}
-                      {volume?.note && <p className="field-note run-note">{volume.note}</p>}
-                    </div>
-                    {displayVolume?.ensemble && (
-                      <EnsembleControls
-                        volume={displayVolume}
-                        display={display}
-                        onDisplay={setDisplay}
-                        mode={uncertaintyMode}
-                        onMode={setUncertaintyMode}
-                        scale={uncertaintyScale}
-                        onScale={setUncertaintyScale}
-                        palette={palette}
-                        range={range}
-                        normalsReady={normals.current}
-                      />
-                    )}
-                    {displayVolume && meta && (
-                      <NormalsControls
-                        handle={normals}
-                        reference={display.reference}
-                        onReference={(reference) => setDisplay({ ...display, reference })}
-                        units={displayVolume.sourceUnits}
-                        canCompare={!!meta.axes.init && isComparableForecast(meta.url)}
-                        unavailableReason="Normals are available for the GFS, GEFS and ECMWF IFS ENS forecasts, which share the 0.25° grid of the NOAA GEFS analysis archive."
-                      />
-                    )}
-                    {displayVolume ? (
-                      <div className="control-section">
-                        {' '}
-                        <div className="legend">
-                          <div>
-                            <span>
-                              Color scale
-                              <small className="legend-quantity">
-                                {displayVolume.quantity.label}
-                              </small>
-                            </span>
-                            <Popover
-                              trigger={
-                                <Button
-                                  variant="ghost"
-                                  className="icon"
-                                  aria-label="Color settings"
-                                >
-                                  <Settings2 size={14} />
-                                </Button>
-                              }
-                            >
-                              <label>
-                                Color palette
-                                <select
-                                  aria-label="Color palette"
-                                  value={palette}
-                                  onChange={(e) => {
-                                    const next = e.target.value as Palette;
-                                    setPalette(next);
-                                    if (next === 'snowfall') {
-                                      const limit = Math.max(
-                                        Math.abs(range[0]),
-                                        Math.abs(range[1]),
-                                      );
-
-                                      setRange([-limit, limit]);
-                                    }
-                                  }}
-                                >
-                                  <option value="snowfall">
-                                    Snowfall anomaly (brown–white–blue)
-                                  </option>
-                                  <option value="balance">Diverging (blue–white–red)</option>
-                                  <option value="viridis">Viridis</option>
-                                  <option value="thermal">Thermal</option>
-                                  <option value="ocean">Ocean</option>
-                                  <option value="ember">Ember</option>
-                                </select>
-                              </label>
-                              <div className="range-fields">
-                                <label>
-                                  Minimum
-                                  <input
-                                    aria-label="Color minimum"
-                                    type="number"
-                                    value={range[0]}
-                                    step="any"
-                                    onChange={(e) => {
-                                      const n = Number(e.target.value);
-                                      if (palette === 'snowfall') {
-                                        if (n < 0) setRange([n, -n]);
-                                      } else if (n < range[1]) setRange([n, range[1]]);
-                                    }}
-                                  />
-                                </label>
-                                <label>
-                                  Maximum
-                                  <input
-                                    aria-label="Color maximum"
-                                    type="number"
-                                    value={range[1]}
-                                    step="any"
-                                    onChange={(e) => {
-                                      const n = Number(e.target.value);
-                                      if (palette === 'snowfall') {
-                                        if (n > 0) setRange([-n, n]);
-                                      } else if (n > range[0]) setRange([range[0], n]);
-                                    }}
-                                  />
-                                </label>
-                              </div>
-                            </Popover>
-                          </div>
-                          <div className="color-bar" style={{ background: gradient(palette) }} />
-                          <div className="legend-numbers">
-                            <span>
-                              {displayVolume.min < range[0] ? '≤ ' : ''}
-                              {legendValue(range[0], displayVolume.quantity.kind)}{' '}
-                              {legendUnits(displayVolume.quantity)}
-                            </span>
-                            <span>
-                              {legendValue((range[0] + range[1]) / 2, displayVolume.quantity.kind)}
-                            </span>
-                            <span>
-                              {displayVolume.max > range[1] ? '≥ ' : ''}
-                              {legendValue(range[1], displayVolume.quantity.kind)}{' '}
-                              {legendUnits(displayVolume.quantity)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
-                    {displayVolume && (
-                      <AnalysisControls
-                        volume={displayVolume}
-                        analysis={analysis}
-                        slices={slices}
-                        onReveal={updateSlices}
-                        onEnable={() => setAnalysisEnabled(true)}
-                      />
-                    )}
-                  </div>
-                  <div className="control-section diagnostics-controls">
-                    <Button variant="ghost" onClick={() => setDiagnostics(true)}>
-                      Dataset details
-                    </Button>
-                  </div>
+                      ) : null,
+                      clock:
+                        clockMeans && displayVolume ? (
+                          <Figures items={clockFigures(clockMeans, displayVolume, slices[2])} />
+                        ) : null,
+                      sql: displayVolume ? (
+                        <AnalysisControls
+                          part="sql"
+                          volume={displayVolume}
+                          analysis={analysis}
+                          slices={slices}
+                          onReveal={updateSlices}
+                          onEnable={enableAnalysis}
+                          selectionStyle={selectionStyle}
+                          onSelectionStyle={setSelectionStyle}
+                        />
+                      ) : null,
+                    }}
+                  </StoryPanel>
                 </aside>
               </Panel>
             )}
@@ -898,6 +1537,43 @@ export default function App() {
                   <Group orientation="vertical" className="viewer-panels">
                     <Panel defaultSize={linked ? '70%' : '100%'} minSize="35%">
                       <div className="visualization">
+                        {meta && (
+                          <RegionPicker
+                            extent={extent}
+                            onMove={moveTo}
+                            pending={pendingExtent}
+                            status={locationStatus}
+                          />
+                        )}
+                        {pendingExtent && busy && (
+                          <div className="region-loading" role="status">
+                            <div className="loading-state">
+                              <CubeLoader size={72} />
+                              <div className="loading-caption">
+                                <span>Loading the new region</span>
+                                <Button
+                                  variant="ghost"
+                                  className="icon"
+                                  aria-label="Cancel loading"
+                                  onClick={() => {
+                                    cancel.current?.();
+                                    setBusy(false);
+                                    setPendingExtent(null);
+                                    setMessage('');
+                                  }}
+                                >
+                                  <X size={14} />
+                                </Button>
+                              </div>
+                              <progress
+                                aria-label="Region loading progress"
+                                max={1}
+                                value={blocks ? Number(blocks[1]) / Number(blocks[2]) : undefined}
+                              />
+                              <small className="loading-step">{message}</small>
+                            </div>
+                          </div>
+                        )}
                         {filterNotice && (
                           <div className="filter-notice" role="status">
                             <p>{filterNotice}</p>
@@ -908,46 +1584,118 @@ export default function App() {
                             )}
                           </div>
                         )}
-                        <Cube
-                          selectionMask={analysis.matches?.mask ?? null}
-                          volume={displayVolume}
-                          uncertaintyMode={
-                            display.statistic === 'mean' || display.statistic === 'median'
-                              ? uncertaintyMode
-                              : 'off'
-                          }
-                          uncertaintyScale={uncertaintyScale}
-                          normals={normals.current ? normals.normals : null}
-                          points={selectedCells}
-                          slices={slices}
-                          onSlices={updateSlices}
-                          onSliceStart={(axis) => {
-                            if (axis === 2) setPlaying(false);
-                          }}
-                          range={range}
-                          palette={palette}
-                          reset={reset}
-                          onReset={resetCube}
-                          onPoint={(p) => {
-                            setSelectedForecasts((previous) =>
-                              addForecastPoint(previous, displayVolume, p.x, p.y),
-                            );
-                            setLinked(true);
-                            changeSlice(2, p.t);
-                          }}
-                          onError={renderError}
-                          onReady={markReady}
-                          loading={busy}
-                          loadError={error}
-                          regionFailure={regionFailure}
-                          latitudeBounds={[
-                            Math.min(...(meta?.lat || [-90])),
-                            Math.max(...(meta?.lat || [90])),
-                          ]}
-                          onRegion={(next) => {
-                            if (meta) load(meta, variable, init, next, true);
-                          }}
-                        />
+                        {viewMode === 'radial' && radial ? (
+                          <>
+                            <CubeToolbar
+                              view="radial"
+                              onView={setViewMode}
+                              mode="orbit"
+                              onMode={() => {}}
+                              onReset={() => {}}
+                              onZoom={() => {}}
+                              zoom={0}
+                              showLabels={false}
+                              onLabels={() => {}}
+                              showRelief={false}
+                              reliefMenu={null}
+                            />
+                            <RadialView
+                              spec={radial}
+                              pulse={`${section}|${certaintyView}`}
+                              pins={radialPins}
+                              onPick={(x, y) => {
+                                if (!displayVolume) return;
+                                setSelectedForecasts((previous) =>
+                                  addForecastPoint(previous, displayVolume, x, y),
+                                );
+                                setLinked(true);
+                              }}
+                            />
+                            <div
+                              className="segmented two radial-arrangement"
+                              role="radiogroup"
+                              aria-label="How each run is drawn"
+                            >
+                              {(
+                                [
+                                  ['map', 'Maps', 'Each run as a map of the region'],
+                                  [
+                                    'mix',
+                                    'Colour mix',
+                                    'Each run’s colours sorted from coldest to warmest, each taking its share of the area',
+                                  ],
+                                ] as const
+                              ).map(([value, label, title]) => (
+                                <button
+                                  key={value}
+                                  role="radio"
+                                  title={title}
+                                  aria-checked={arrangement === value}
+                                  className={arrangement === value ? 'selected' : ''}
+                                  onClick={() => setArrangement(value)}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          </>
+                        ) : (
+                          <Cube
+                            selectionMask={cubeMask}
+                            selectionStyle={isTrust ? 'paint' : selectionStyle}
+                            clock={clock}
+                            theme={theme}
+                            pulse={`${section}|${certaintyView}`}
+                            view={viewMode}
+                            onView={setViewMode}
+                            beams={isTrust ? beams : section === 'persistent' ? eventBeams : []}
+                            volume={cubeVolume!}
+                            uncertaintyMode={
+                              (section === 'certainty' || section === 'normal') &&
+                              (display.statistic === 'mean' || display.statistic === 'median')
+                                ? uncertaintyMode
+                                : 'off'
+                            }
+                            uncertaintyScale={uncertaintyScale}
+                            normals={normals.current ? normals.normals : null}
+                            points={selectedCells}
+                            slices={
+                              memberVolume
+                                ? [slices[0], slices[1], memberVolume.shape[0] - 1]
+                                : slices
+                            }
+                            onSlices={(v) =>
+                              memberVolume ? updateSlices([v[0], v[1], slices[2]]) : updateSlices(v)
+                            }
+                            onSliceStart={(axis) => {
+                              if (axis === 2) setPlaying(false);
+                            }}
+                            range={memberVolume ? memberRange : range}
+                            palette={memberVolume ? 'balance' : palette}
+                            reset={reset}
+                            onReset={resetCube}
+                            onPoint={(p) => {
+                              setSelectedForecasts((previous) =>
+                                addForecastPoint(previous, displayVolume, p.x, p.y),
+                              );
+                              setLinked(true);
+                              if (!memberVolume) changeSlice(2, p.t);
+                            }}
+                            onError={renderError}
+                            onReady={markReady}
+                            loading={busy}
+                            loadError={error}
+                            regionFailure={regionFailure}
+                            latitudeBounds={[
+                              Math.min(...(meta?.lat || [-90])),
+                              Math.max(...(meta?.lat || [90])),
+                            ]}
+                            onRegion={(next) => {
+                              if (meta) load(meta, variable, init, next, true);
+                            }}
+                            minimap={false}
+                          />
+                        )}
                       </div>
                     </Panel>
                     {linked ? (
@@ -1091,7 +1839,7 @@ export default function App() {
           </div>
         ) : null}
         <Dialog
-          open={catalogLoading || !!catalog || !!catalogError}
+          open={(catalogLoading && !booting) || !!catalog || !!catalogError}
           onOpenChange={(isOpen) => {
             if (!isOpen) {
               ++catalogRequest.current;
@@ -1102,7 +1850,7 @@ export default function App() {
           }}
           title="Choose a dataset"
         >
-          {catalogLoading && <p role="status">Loading catalog…</p>}
+          {catalogLoading && !booting && <p role="status">Loading catalog…</p>}
           {catalogError && (
             <>
               <p role="alert">{catalogError}</p>

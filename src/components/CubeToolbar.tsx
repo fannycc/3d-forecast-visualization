@@ -1,15 +1,20 @@
-import { useState } from 'react';
-import { Box, Hand, Layers2, Minus, Mountain, Plus, Type } from 'lucide-react';
-import { Button, Tip } from './ui/primitives';
+import { useState, type ReactNode } from 'react';
+import { Box, CircleDot, Hand, Minus, Mountain, Plus, Rotate3d, Slice, Type } from 'lucide-react';
+import { Button, Popover, Tip } from './ui/primitives';
 
 export type CubeMode = 'orbit' | 'pan' | 'slice';
+export type ViewMode = 'cube' | 'radial';
+
 const modes = [
-  { id: 'orbit', label: 'Orbit', hint: 'Drag to rotate the cube', Icon: Box },
+  { id: 'orbit', label: 'Orbit', hint: 'Drag to rotate the cube', Icon: Rotate3d },
   { id: 'pan', label: 'Pan', hint: 'Drag to move the view', Icon: Hand },
-  { id: 'slice', label: 'Slice', hint: 'Drag a face to slice the cube', Icon: Layers2 },
+  { id: 'slice', label: 'Slice', hint: 'Drag a face to slice the cube', Icon: Slice },
 ] as const;
 
+/** Floating tools above the visualization. In the flat view, cube-only tools are disabled. */
 export function CubeToolbar({
+  view,
+  onView,
   mode,
   onMode,
   onReset,
@@ -19,7 +24,10 @@ export function CubeToolbar({
   onLabels,
   showRelief,
   onRelief,
+  reliefMenu,
 }: {
+  view: ViewMode;
+  onView: (view: ViewMode) => void;
   mode: CubeMode;
   onMode: (mode: CubeMode) => void;
   onReset: () => void;
@@ -28,66 +36,107 @@ export function CubeToolbar({
   showLabels: boolean;
   onLabels: () => void;
   showRelief: boolean;
-  onRelief: () => void;
+  onRelief?: () => void;
+  /** Terrain options, opened from the relief button. */
+  reliefMenu: ReactNode;
 }) {
   const [focused, setFocused] = useState(0);
-  const actions = [
-    ...modes.map(({ id, label, hint, Icon }) => ({
+  /** The relief button turns terrain on and opens its options; a second click turns it off.
+   * Clicking elsewhere only closes the options. */
+  const [reliefOpen, setReliefOpen] = useState(false);
+  const clickRelief = () => {
+    onRelief?.();
+    setReliefOpen(!showRelief);
+  };
+  const flat = view === 'radial';
+  const actions: {
+    label: string;
+    hint: string;
+    content: ReactNode;
+    pressed?: boolean;
+    onClick?: () => void;
+    disabled: boolean;
+    menu?: ReactNode;
+    separator?: boolean;
+  }[] = [
+    {
+      label: 'Cube view',
+      hint: 'Show the forecast as a 3D cube',
+      content: <Box size={15} aria-hidden="true" />,
+      pressed: !flat,
+      onClick: () => onView('cube'),
+      disabled: false,
+    },
+    {
+      label: 'Flat view',
+      hint: 'Show the runs as a flat radial view',
+      content: <CircleDot size={15} aria-hidden="true" />,
+      pressed: flat,
+      onClick: () => onView('radial'),
+      disabled: false,
+    },
+    ...modes.map(({ id, label, hint, Icon }, i) => ({
       label,
-      hint,
+      hint: flat ? 'Only in the cube view' : hint,
       content: (
         <>
           <Icon size={15} aria-hidden="true" />
           {id === 'slice' && <span>Slice</span>}
         </>
       ),
-      pressed: mode === id,
+      pressed: !flat && mode === id,
       onClick: () => onMode(id),
-      disabled: false,
+      disabled: flat,
+      separator: i === 0,
     })),
     {
       label: 'Reset cube',
-      hint: 'Restore the full cube and camera',
+      hint: flat ? 'Only in the cube view' : 'Restore the full cube and camera',
       content: <>Reset</>,
       onClick: onReset,
-      disabled: false,
+      disabled: flat,
+      separator: true,
     },
     {
       label: 'Zoom in',
       hint: 'Zoom in',
       content: <Plus size={16} aria-hidden="true" />,
       onClick: () => onZoom(0.2),
-      disabled: zoom >= 3,
+      disabled: flat || zoom >= 3,
     },
     {
       label: 'Zoom out',
       hint: 'Zoom out',
       content: <Minus size={16} aria-hidden="true" />,
       onClick: () => onZoom(-0.2),
-      disabled: zoom <= -2,
+      disabled: flat || zoom <= -2,
     },
     {
       label: 'Place labels',
       hint: showLabels ? 'Hide place names' : 'Show place names',
       content: <Type size={16} aria-hidden="true" />,
-      pressed: showLabels,
+      pressed: !flat && showLabels,
       onClick: onLabels,
-      disabled: false,
+      disabled: flat,
+      separator: true,
     },
     {
       label: 'Relief',
-      hint: showRelief ? 'Hide the relief model' : 'Show the relief model below the cube',
+      hint: flat ? 'Only in the cube view' : 'Terrain options',
       content: <Mountain size={16} aria-hidden="true" />,
-      pressed: showRelief,
-      onClick: onRelief,
-      disabled: false,
+      pressed: !flat && showRelief,
+      onClick: clickRelief,
+      disabled: flat,
+      menu: reliefMenu,
     },
   ];
+
   return (
     <div
       className="camera-tools"
+      data-view={view}
       role="toolbar"
-      aria-label="Cube controls"
+      aria-label="Visualization controls"
       onKeyDown={(e) => {
         if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
         e.preventDefault();
@@ -105,25 +154,42 @@ export function CubeToolbar({
         buttons[next]?.focus();
       }}
     >
-      {actions.map((action, index) => (
-        <span className="camera-action" key={action.label}>
-          {(index === 3 || index === 6) && <span className="camera-separator" aria-hidden="true" />}
-          <Tip label={action.hint}>
-            <Button
-              variant="ghost"
-              className={`icon ${action.pressed ? 'active' : ''}`}
-              aria-label={action.label}
-              aria-pressed={action.pressed}
-              tabIndex={index === (actions[focused]?.disabled ? 0 : focused) ? 0 : -1}
-              disabled={action.disabled}
-              onFocus={() => setFocused(index)}
-              onClick={action.onClick}
-            >
-              {action.content}
-            </Button>
-          </Tip>
-        </span>
-      ))}
+      {actions.map((action, index) => {
+        const button = (
+          <Button
+            variant="ghost"
+            className={`icon ${action.pressed ? 'active' : ''}`}
+            aria-label={action.label}
+            aria-pressed={action.pressed}
+            tabIndex={index === (actions[focused]?.disabled ? 0 : focused) ? 0 : -1}
+            disabled={action.disabled}
+            onFocus={() => setFocused(index)}
+            onClick={action.onClick}
+          >
+            {action.content}
+          </Button>
+        );
+
+        return (
+          <span className="camera-action" key={action.label}>
+            {action.separator && <span className="camera-separator" aria-hidden="true" />}
+            {action.menu && !action.disabled ? (
+              <Popover
+                trigger={button}
+                align="end"
+                open={reliefOpen && showRelief}
+                onOpenChange={(open) => {
+                  if (!open) setReliefOpen(false);
+                }}
+              >
+                {action.menu}
+              </Popover>
+            ) : (
+              <Tip label={action.hint}>{button}</Tip>
+            )}
+          </span>
+        );
+      })}
     </div>
   );
 }

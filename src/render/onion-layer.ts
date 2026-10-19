@@ -33,6 +33,12 @@ type Props = LayerProps & {
   uncertainty?: Float32Array;
   uncertaintyMode?: 'off' | 'suppress' | 'hatch';
   uncertaintyScale?: number;
+  /** Matching cells from SQL or an event search, in [time, y, x] order. */
+  selectionMask?: Uint8Array | null;
+  selectionStyle?: 'isolate' | 'paint';
+  /** Colour that non-matching cells fade toward in paint mode. */
+  muted?: [number, number, number];
+  hideMissing?: boolean;
   onReady?: () => void;
 };
 
@@ -45,6 +51,9 @@ const uniformBlock = `uniform onionUniforms {
   float paletteIndex;
   float uncertaintyMode;
   float uncertaintyScale;
+  float maskMode;
+  vec3 muted;
+  float hideMissing;
 } onion;`;
 
 const onionModule = {
@@ -60,6 +69,9 @@ const onionModule = {
     paletteIndex: 'f32',
     uncertaintyMode: 'f32',
     uncertaintyScale: 'f32',
+    maskMode: 'f32',
+    muted: 'vec3<f32>',
+    hideMissing: 'f32',
   },
 } as const;
 
@@ -69,14 +81,17 @@ in float heights;
 in vec2 instanceSheet;
 out vec2 vUV;
 out vec3 vWorld;
+out float vHeight;
 flat out float vTime;
 void main() {
   vUV = positions;
+  vHeight = heights;
   vTime = instanceSheet.x;
   vec3 p = vec3((positions - 0.5) * onion.size.xy, instanceSheet.y + heights * onion.unitsPerMetre);
   vWorld = p;
   geometry.worldPosition = p;
-  geometry.pickingColor = vec3(0.);
+  // Any non-zero colour marks the vertex pickable; the cell is encoded in the fragment shader.
+  geometry.pickingColor = vec3(1., 0., 0.);
   gl_Position = project_position_to_clipspace(p, vec3(0.), vec3(0.), geometry.position);
   DECKGL_FILTER_GL_POSITION(gl_Position, geometry);
   vec4 c = vec4(1.);
@@ -89,18 +104,23 @@ precision highp sampler3D;
 uniform sampler3D volumeTexture;
 uniform sampler2D paletteTexture;
 uniform sampler3D uncertaintyTexture;
+uniform sampler3D selectionTexture;
 in vec2 vUV;
 in vec3 vWorld;
+in float vHeight;
 flat in float vTime;
 out vec4 fragColor;
 void main() {
   if (vUV.x > onion.cut.x + 1e-5 || vUV.y < onion.cut.y - 1e-5) discard;
   ivec3 cell = ivec3(int(round(vUV.x * (onion.counts.x - 1.))), int(round(vUV.y * (onion.counts.y - 1.))), int(vTime));
   float value = texelFetch(volumeTexture, cell, 0).r;
+  bool selected = onion.maskMode < .5 || texelFetch(selectionTexture, cell, 0).r > .5;
+  if (onion.maskMode > .5 && onion.maskMode < 1.5 && !selected) discard;
   vec3 normal = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   if (normal.z < 0.) normal = -normal;
   // Gentle shading: enough to read the terrain, small enough not to pass for colder values.
   float shade = 0.88 + 0.14 * max(dot(normal, normalize(vec3(-0.5, 0.5, 0.7071))), 0.);
+  if ((isnan(value) || isinf(value)) && onion.hideMissing > .5) discard;
   if (isnan(value) || isinf(value)) {
     fragColor = vec4(vec3(0.62) * shade, 1.);
   } else {
@@ -124,11 +144,15 @@ void main() {
     }
     fragColor = vec4(c * shade, 1.);
   }
-  if (picking.isActive > .5) {
+  if (!selected && picking.isActive < .5) {
+    float g = dot(fragColor.rgb, vec3(.2126, .7152, .0722));
+    fragColor.rgb = mix(vec3(g), onion.muted, .72);
+  }
+  DECKGL_FILTER_COLOR(fragColor, geometry);
+  if (picking.isActive > .5 && picking.isAttribute < .5) {
     int n = (cell.z * int(onion.counts.y) + cell.y) * int(onion.counts.x) + cell.x + 1;
     fragColor.rgb = vec3(n % 256, (n / 256) % 256, (n / 65536) % 256) / 255.;
   }
-  DECKGL_FILTER_COLOR(fragColor, geometry);
 }`;
 
 export class OnionLayer extends Layer<Props> {
@@ -138,6 +162,7 @@ export class OnionLayer extends Layer<Props> {
     sheetBuffer?: Buffer;
     texture?: Texture;
     uncertaintyTexture?: Texture;
+    selectionTexture?: Texture;
     paletteTexture?: Texture;
     reported?: boolean;
   };
@@ -247,6 +272,28 @@ export class OnionLayer extends Layer<Props> {
       });
     }
 
+    if (
+      props.volume !== oldProps.volume ||
+      props.selectionMask !== oldProps.selectionMask ||
+      !this.state.selectionTexture
+    ) {
+      this.state.selectionTexture?.destroy();
+      const mask = props.selectionMask;
+      const [depth, height, width] = mask ? props.volume.shape : [1, 1, 1];
+      this.setState({
+        selectionTexture: this.context.device.createTexture({
+          dimension: '3d',
+          format: 'r8unorm',
+          width,
+          height,
+          depth,
+          data: mask ?? new Uint8Array([255]),
+          mipLevels: 1,
+          sampler: { minFilter: 'nearest', magFilter: 'nearest' },
+        }),
+      });
+    }
+
     const model = this.state.model!;
     if (
       props.sheets !== oldProps.sheets ||
@@ -273,6 +320,7 @@ export class OnionLayer extends Layer<Props> {
       volumeTexture: this.state.texture!,
       paletteTexture: this.state.paletteTexture!,
       uncertaintyTexture: this.state.uncertaintyTexture!,
+      selectionTexture: this.state.selectionTexture!,
     });
   }
 
@@ -298,6 +346,9 @@ export class OnionLayer extends Layer<Props> {
               ? 2
               : 0,
         uncertaintyScale: this.props.uncertaintyScale ?? 1,
+        maskMode: !this.props.selectionMask ? 0 : this.props.selectionStyle === 'paint' ? 2 : 1,
+        muted: this.props.muted ?? [0.16, 0.18, 0.21],
+        hideMissing: this.props.hideMissing ? 1 : 0,
       },
     });
     if (model.draw(this.context.renderPass) && !this.state.reported) {
@@ -324,6 +375,7 @@ export class OnionLayer extends Layer<Props> {
     this.state.sheetBuffer?.destroy();
     this.state.texture?.destroy();
     this.state.uncertaintyTexture?.destroy();
+    this.state.selectionTexture?.destroy();
     this.state.paletteTexture?.destroy();
   }
 }

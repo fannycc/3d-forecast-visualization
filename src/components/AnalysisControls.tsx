@@ -15,12 +15,19 @@ export function AnalysisControls({
   onEnable,
   slices,
   onReveal,
+  part,
+  selectionStyle,
+  onSelectionStyle,
 }: {
   volume: Volume;
   analysis: Analysis;
   onEnable: () => void;
   slices: [number, number, number];
   onReveal: (cuts: [number, number, number]) => void;
+  /** Story sections show either the event builder or the free SQL editor. */
+  part: 'events' | 'sql';
+  selectionStyle: 'isolate' | 'paint';
+  onSelectionStyle: (style: 'isolate' | 'paint') => void;
 }) {
   const { state, runtime, matches, status, error } = analysis;
   const unit = volume.quantity.units;
@@ -88,15 +95,52 @@ export function AnalysisControls({
     cuts &&
     (cuts[0] > slices[0] || cuts[1] < slices[1] || cuts[2] > slices[2]);
 
+  useEffect(() => onEnable(), [onEnable]);
+
   return (
-    <details
-      className="control-section analysis-controls sql-only"
-      open
-      onToggle={(e) => {
-        if (e.currentTarget.open) onEnable();
-      }}
-    >
-      <summary>SQL{active ? <span className="active-dot" /> : null}</summary>
+    <div className="analysis-controls">
+      {part === 'events' && !isWinterTime(volume.timeUnits) && (
+        <EventBuilder
+          key={`${volume.variable}|${volume.quantity.label}`}
+          volume={volume}
+          disabled={!runtime || running}
+          reason={
+            running
+              ? 'Searching…'
+              : runtime
+                ? ''
+                : error && !status
+                  ? `The query engine could not start: ${error}`
+                  : 'Preparing the query engine for this view…'
+          }
+          onRetry={!runtime && error && !status ? analysis.retry : undefined}
+          onFind={(text) => {
+            setQuery(text);
+            run(text);
+          }}
+        />
+      )}
+      {active && (
+        <div className="segmented two" role="radiogroup" aria-label="How matches are drawn">
+          {(
+            [
+              ['isolate', 'Isolate matches', 'Draw only the matching cells'],
+              ['paint', 'Paint matches', 'Keep the whole cube; colour only the matches'],
+            ] as const
+          ).map(([value, label, title]) => (
+            <button
+              key={value}
+              role="radio"
+              title={title}
+              aria-checked={selectionStyle === value}
+              className={selectionStyle === value ? 'selected' : ''}
+              onClick={() => onSelectionStyle(value)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       {(active || error) && (
         <div className="selection-summary">
           <p
@@ -145,77 +189,58 @@ export function AnalysisControls({
           </Button>
         </div>
       )}
-      {!isWinterTime(volume.timeUnits) && (
-        <EventBuilder
-          key={`${volume.variable}|${volume.quantity.label}`}
-          volume={volume}
-          disabled={!runtime || running}
-          reason={
-            running
-              ? 'Searching…'
-              : runtime
-                ? ''
-                : error && !status
-                  ? `The query engine could not start: ${error}`
-                  : 'Preparing the query engine for this view…'
-          }
-          onRetry={!runtime && error && !status ? analysis.retry : undefined}
-          onFind={(text) => {
-            setQuery(text);
-            run(text);
-          }}
-        />
-      )}
-      <div className="sql-disclosure">
-        <div className="query-toolbar">
-          <code>loaded_forecast</code>
-          <Popover
-            trigger={
-              <Button variant="ghost" className="icon" aria-label="Query reference">
-                <Info size={14} />
-              </Button>
-            }
-          >
-            <div className="query-reference">
-              <strong>Loaded region</strong>
-              <p>
-                {first} to {last} {isWinterTime(volume.timeUnits) ? 'winters' : 'forecast hours'} ·{' '}
-                {unit}
-              </p>
-              <p>
-                Columns: cell_id, longitude, latitude, cell_area_km2,{' '}
-                {isWinterTime(volume.timeUnits) ? 'winter' : 'forecast_hour'}, value
-                {volume.variable === 'temperature_2m' ? ', temperature' : ''}
-                {columnNames(volume).map((c) => `, ${c}`)}.
-              </p>
-              <p>
-                <code>value</code> is what the cube shows: {volume.quantity.label.toLowerCase()} (
-                {unit}). Weight by <code>cell_area_km2</code> for area statistics; cells shrink
-                toward the poles.
-              </p>
-              <p>
-                Include cell_id to show matching cells in the cube. Filter values and time
-                coordinates in your WHERE clause.
-              </p>
-            </div>
-          </Popover>
+      {part === 'sql' && (
+        <div className="sql-disclosure">
+          <div className="query-toolbar">
+            <code>loaded_forecast</code>
+            <Popover
+              trigger={
+                <Button variant="ghost" className="icon" aria-label="Query reference">
+                  <Info size={14} />
+                </Button>
+              }
+            >
+              <div className="query-reference">
+                <strong>Loaded region</strong>
+                <p>
+                  {first} to {last} {isWinterTime(volume.timeUnits) ? 'winters' : 'forecast hours'}{' '}
+                  · {unit}
+                </p>
+                <p>
+                  Columns: cell_id, longitude, latitude, cell_area_km2,{' '}
+                  {isWinterTime(volume.timeUnits) ? 'winter' : 'forecast_hour'}, value
+                  {volume.variable === 'temperature_2m' ? ', temperature' : ''}
+                  {columnNames(volume).map((c) => `, ${c}`)}.
+                </p>
+                <p>
+                  <code>value</code> is what the cube shows: {volume.quantity.label.toLowerCase()} (
+                  {unit}). Weight by <code>cell_area_km2</code> for area statistics; cells shrink
+                  toward the poles.
+                </p>
+                <p>
+                  Include cell_id to show matching cells in the cube. Filter values and time
+                  coordinates in your WHERE clause.
+                </p>
+              </div>
+            </Popover>
+          </div>
+          <textarea
+            aria-label="SQL query"
+            spellCheck={false}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <Button className="run-query" disabled={!runtime || running} onClick={() => run()}>
+            {running ? 'Running…' : !runtime ? 'Preparing…' : 'Run query'}
+          </Button>
+          {queryError && (
+            <p className="query-error" role="alert">
+              {queryError}
+            </p>
+          )}
         </div>
-        <textarea
-          aria-label="SQL query"
-          spellCheck={false}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
-        <Button className="run-query" disabled={!runtime || running} onClick={() => run()}>
-          {running ? 'Running…' : !runtime ? 'Preparing…' : 'Run query'}
-        </Button>
-        {queryError && (
-          <p className="query-error" role="alert">
-            {queryError}
-          </p>
-        )}
-      </div>
-    </details>
+      )}
+    </div>
   );
 }
 
@@ -257,17 +282,32 @@ function EventBuilder({
     'value',
     ...columnNames(volume).filter((c) => c in columnLabels && c !== 'forecast'),
   ];
+  /** A threshold that some places actually reach: the upper fifth of this region's values. */
+  const defaultThreshold = (v: Volume) => {
+    if (v.quantity.kind === 'anomaly')
+      return Number(formatValue(Math.max(Math.abs(v.min), Math.abs(v.max)) / 3));
+    if (v.quantity.kind === 'share') return 0.5;
+    const step = Math.max(1, Math.floor(v.data.length / 20000));
+    const sample: number[] = [];
+    for (let i = 0; i < v.data.length; i += step)
+      if (Number.isFinite(v.data[i])) sample.push(v.data[i]);
+    sample.sort((a, b) => a - b);
+
+    return sample.length
+      ? Number(formatValue(sample[Math.floor(sample.length * 0.8)]))
+      : Number(formatValue(v.min + (v.max - v.min) * 0.75));
+  };
   const [rule, setRule] = useState<EventRule>(() => ({
     column: 'value',
     direction: 'above',
-    threshold:
-      volume.quantity.kind === 'anomaly'
-        ? Number(formatValue(Math.max(Math.abs(volume.min), Math.abs(volume.max)) / 3))
-        : volume.quantity.kind === 'share'
-          ? 0.5
-          : Number(formatValue(volume.min + (volume.max - volume.min) * 0.75)),
+    threshold: defaultThreshold(volume),
     minHours: 72,
   }));
+  // A new region or variable gets a fresh default, until the threshold is edited by hand.
+  const edited = useRef(false);
+  useEffect(() => {
+    if (!edited.current) setRule((r) => ({ ...r, threshold: defaultThreshold(volume) }));
+  }, [volume]);
   const [unit, setUnit] = useState<'h' | 'd'>('d');
   const column = columns.includes(rule.column) ? rule.column : 'value';
   const [error, setError] = useState('');
@@ -306,7 +346,10 @@ function EventBuilder({
           type="number"
           step="any"
           value={rule.threshold}
-          onChange={(e) => setRule({ ...rule, threshold: Number(e.target.value) })}
+          onChange={(e) => {
+            edited.current = true;
+            setRule({ ...rule, threshold: Number(e.target.value) });
+          }}
         />
         <span>for at least</span>
         <input

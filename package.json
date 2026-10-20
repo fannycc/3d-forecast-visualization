@@ -28,8 +28,10 @@
     "@radix-ui/react-popover": "1.1.23",
     "@radix-ui/react-slider": "1.4.7",
     "@radix-ui/react-tooltip": "1.2.16",
+    "@uwdata/flechette": "2.5.0",
     "@uwdata/mosaic-core": "0.31.0",
     "@uwdata/mosaic-sql": "0.31.0",
+    "@zarrita/storage": "0.2.0",
     "apache-arrow": "21.2.0",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
@@ -38,9 +40,8 @@
     "react-dom": "19.3.0",
     "react-resizable-panels": "4.13.3",
     "tailwind-merge": "3.7.0",
-    "zarrita": "0.7.5",
-    "@uwdata/flechette": "2.5.0",
-    "@zarrita/storage": "0.2.0"
+    "three": "0.180.0",
+    "zarrita": "0.7.5"
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
@@ -48,6 +49,7 @@
     "@types/node": "26.6.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "@types/three": "0.180.0",
     "@vitejs/plugin-react": "6.1.1",
     "prettier": "3.9.9",
     "tailwindcss": "4.3.3",

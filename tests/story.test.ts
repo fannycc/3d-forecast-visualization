@@ -3,6 +3,7 @@ import { certainPlaces, memberSplit, regionalMeans, reliableHorizon } from '../s
 import { ensembleStats } from '../src/engine/ensemble';
 import { timeLabel } from '../src/engine/time-labels';
 import type { Volume } from '../src/engine/types';
+import { eventCells } from '../src/analysis/events';
 
 /** 2 times × 1 × 2 cells, 3 members (member-major). */
 function ensembleVolume(): Volume {
@@ -107,4 +108,19 @@ it('finds the longest event sites, measured in valid hours and spaced apart', as
     [0, 2, 0, 2],
   ]);
   expect(eventSites(volume, mask, 5, 3)).toHaveLength(1);
+});
+
+describe('event cells for single runs', () => {
+  it('matches the SQL rule: consecutive samples, duration in valid hours, gaps break runs', () => {
+    // One place, steps at 0, 3, 6, 12, 18 h.
+    const values = [5, 6, 7, 1, 8];
+    const { mask, longest } = eventCells(values, [5, 1, 1], [0, 3, 6, 12, 18], {
+      direction: 'above',
+      threshold: 4,
+      minHours: 6,
+    });
+    // 0–6 h lasts 6 h (kept); the lone sample at 18 h lasts 0 h (dropped).
+    expect([...mask]).toEqual([1, 1, 1, 0, 0]);
+    expect(longest[0]).toBe(6);
+  });
 });

@@ -10,6 +10,7 @@ import { Geometry, Model } from '@luma.gl/engine';
 import type { Buffer, Texture } from '@luma.gl/core';
 import type { Volume } from '../engine/types';
 import { colorSprite, paletteNames, type Palette } from './colors';
+import { patternAtlasPixels } from './patterns';
 import type { ElevationGrid } from './relief';
 
 /** Terrain-shaped time layers ("onion skins").
@@ -39,6 +40,8 @@ type Props = LayerProps & {
   /** Colour that non-matching cells fade toward in paint mode. */
   muted?: [number, number, number];
   hideMissing?: boolean;
+  /** Draw values as ink glyphs on paper instead of colours. */
+  pattern?: boolean;
   onReady?: () => void;
 };
 
@@ -54,6 +57,8 @@ const uniformBlock = `uniform onionUniforms {
   float maskMode;
   vec3 muted;
   float hideMissing;
+  float patternMode;
+  float patternSize;
 } onion;`;
 
 const onionModule = {
@@ -72,6 +77,8 @@ const onionModule = {
     maskMode: 'f32',
     muted: 'vec3<f32>',
     hideMissing: 'f32',
+    patternMode: 'f32',
+    patternSize: 'f32',
   },
 } as const;
 
@@ -105,6 +112,7 @@ uniform sampler3D volumeTexture;
 uniform sampler2D paletteTexture;
 uniform sampler3D uncertaintyTexture;
 uniform sampler3D selectionTexture;
+uniform sampler2D patternTexture;
 in vec2 vUV;
 in vec3 vWorld;
 in float vHeight;
@@ -148,6 +156,16 @@ void main() {
     float g = dot(fragColor.rgb, vec3(.2126, .7152, .0722));
     fragColor.rgb = mix(vec3(g), onion.muted, .72);
   }
+  // Patterned theme: a glyph per screen cell, chosen by the value (7 steps of ink).
+  if (onion.patternMode > .5 && picking.isActive < .5) {
+    float levels = 7.;
+    float span = onion.valueRange.y - onion.valueRange.x;
+    float scaled = clamp((value - onion.valueRange.x) / (span == 0. ? 1. : span), 0., 1.);
+    float level = (isnan(value) || isinf(value)) ? 0. : min(levels - 1., floor(scaled * levels));
+    vec2 cell = fract(gl_FragCoord.xy / onion.patternSize);
+    float faint = selected ? 0. : 1.;
+    fragColor.rgb = texture(patternTexture, vec2((level + cell.x) / levels, (faint + 1. - cell.y) / 2.)).rgb;
+  }
   DECKGL_FILTER_COLOR(fragColor, geometry);
   if (picking.isActive > .5 && picking.isAttribute < .5) {
     int n = (cell.z * int(onion.counts.y) + cell.y) * int(onion.counts.x) + cell.x + 1;
@@ -164,6 +182,7 @@ export class OnionLayer extends Layer<Props> {
     uncertaintyTexture?: Texture;
     selectionTexture?: Texture;
     paletteTexture?: Texture;
+    patternTexture?: Texture;
     reported?: boolean;
   };
 
@@ -177,6 +196,12 @@ export class OnionLayer extends Layer<Props> {
 
   initializeState() {
     this.setState({
+      patternTexture: this.context.device.createTexture({
+        format: 'rgba8unorm',
+        ...patternAtlasPixels(),
+        mipLevels: 1,
+        sampler: { minFilter: 'linear', magFilter: 'linear' },
+      }),
       paletteTexture: this.context.device.createTexture({
         format: 'rgba8unorm',
         width: 256,
@@ -319,6 +344,7 @@ export class OnionLayer extends Layer<Props> {
     model.setBindings({
       volumeTexture: this.state.texture!,
       paletteTexture: this.state.paletteTexture!,
+      patternTexture: this.state.patternTexture!,
       uncertaintyTexture: this.state.uncertaintyTexture!,
       selectionTexture: this.state.selectionTexture!,
     });
@@ -349,6 +375,8 @@ export class OnionLayer extends Layer<Props> {
         maskMode: !this.props.selectionMask ? 0 : this.props.selectionStyle === 'paint' ? 2 : 1,
         muted: this.props.muted ?? [0.16, 0.18, 0.21],
         hideMissing: this.props.hideMissing ? 1 : 0,
+        patternMode: this.props.pattern ? 1 : 0,
+        patternSize: 11 * (window.devicePixelRatio || 1),
       },
     });
     if (model.draw(this.context.renderPass) && !this.state.reported) {
@@ -377,5 +405,6 @@ export class OnionLayer extends Layer<Props> {
     this.state.uncertaintyTexture?.destroy();
     this.state.selectionTexture?.destroy();
     this.state.paletteTexture?.destroy();
+    this.state.patternTexture?.destroy();
   }
 }

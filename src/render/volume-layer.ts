@@ -11,6 +11,7 @@ import { Model, Geometry } from '@luma.gl/engine';
 import type { Buffer, Texture } from '@luma.gl/core';
 import type { Volume } from '../engine/types';
 import { colorSprite, paletteNames, type Palette } from './colors';
+import { patternAtlasPixels } from './patterns';
 import { voxelTimelineFaces } from './voxel-faces';
 
 /** Fixed display dimensions keep the geographic volume cube-shaped for every region. */
@@ -39,6 +40,8 @@ type Props = LayerProps & {
   uncertaintyMode?: 'off' | 'suppress' | 'hatch';
   /** Spread at which suppression is complete, and at or above which cells are hatched. */
   uncertaintyScale?: number;
+  /** Draw values as ink glyphs on paper instead of colours. */
+  pattern?: boolean;
   onReady?: () => void;
 };
 
@@ -55,6 +58,7 @@ export class VolumeLayer extends Layer<Props> {
     selectionTexture: Texture;
     coords: Texture;
     paletteTexture: Texture;
+    patternTexture: Texture;
     uncertaintyTexture?: Texture;
     reported?: boolean;
   };
@@ -109,6 +113,12 @@ export class VolumeLayer extends Layer<Props> {
       model,
       faceBuffer,
       faceCount: 1,
+      patternTexture: this.context.device.createTexture({
+        format: 'rgba8unorm',
+        ...patternAtlasPixels(),
+        mipLevels: 1,
+        sampler: { minFilter: 'linear', magFilter: 'linear' },
+      }),
       paletteTexture: this.context.device.createTexture({
         format: 'rgba8unorm',
         width: 256,
@@ -239,7 +249,10 @@ export class VolumeLayer extends Layer<Props> {
     if (!this.state.model || !this.state.texture || !this.state.faceCount) return;
     const { volume: v, slices, range, palette } = this.props;
     const lon = v.lon.map((n) => (n - v.lon[0] + 360) % 360);
-    this.state.model.setBindings({ paletteTexture: this.state.paletteTexture });
+    this.state.model.setBindings({
+      paletteTexture: this.state.paletteTexture,
+      patternTexture: this.state.patternTexture,
+    });
 
     this.state.model.shaderInputs.setProps({
       volume: {
@@ -266,6 +279,8 @@ export class VolumeLayer extends Layer<Props> {
               ? 2
               : 0,
         uncertaintyScale: this.props.uncertaintyScale ?? 1,
+        patternMode: this.props.pattern ? 1 : 0,
+        patternSize: 11 * (window.devicePixelRatio || 1),
       },
     });
 
@@ -295,6 +310,7 @@ export class VolumeLayer extends Layer<Props> {
     this.state.uncertaintyTexture?.destroy();
     this.state.coords?.destroy();
     this.state.paletteTexture?.destroy();
+    this.state.patternTexture?.destroy();
     this.state.model?.destroy();
   }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { color, vsupBand, vsupColor, type Palette } from '../render/colors';
 import { formatValue } from '../render/value-scale';
+import { drawPatterned, patternLevel } from '../render/patterns';
 
 /** One map in the radial view: a grid in [y][x] order, row 0 at the first latitude. */
 export type RadialMap = {
@@ -46,6 +47,8 @@ export type RadialSpec = {
   caption: string;
   /** Ring tiles as geographic maps, or as each run's colours sorted by area ("colour mix"). */
   arrangement: 'map' | 'mix';
+  /** False when tiles are not maps (e.g. stripes through time): no pins, no picking. */
+  geographic?: boolean;
   /** Area of each cell in [y][x] order, so a colour mix gives every colour its share of area. */
   weights: ArrayLike<number>;
 };
@@ -149,11 +152,14 @@ const GROW = 2.6;
 export function RadialView({
   spec,
   pulse,
+  pattern = false,
   pins = [],
   onPick,
 }: {
   spec: RadialSpec;
   pulse: string;
+  /** Draw values as ink glyphs on paper instead of colours. */
+  pattern?: boolean;
   /** Pinned cells, drawn on the centre map and on every run's map. */
   pins?: RadialPin[];
   /** Click on a map: the cell that was clicked. */
@@ -313,6 +319,29 @@ export function RadialView({
     }
     g.globalAlpha = Math.max(0.15, progress);
 
+    /** Patterned theme: the map as glyphs, each showing the value under its centre. */
+    const drawMap = (
+      map: RadialMap,
+      mix: ReturnType<typeof paint>['mix'],
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      glyph: number,
+    ) =>
+      drawPatterned(g, { x, y, w, h }, glyph, (u, v) => {
+        const col = Math.min(spec.nx - 1, Math.floor(u * spec.nx));
+        const drawn = Math.min(spec.ny - 1, Math.floor(v * spec.ny));
+        const i = mix
+          ? mix.lookup[(spec.ny - 1 - drawn) * spec.nx + col]
+          : (spec.northUp ? spec.ny - 1 - drawn : drawn) * spec.nx + col;
+        if (i < 0) return { level: -1, muted: false };
+
+        return {
+          level: patternLevel(map.grid[i], map.range[0], map.range[1]),
+          muted: !!map.mask && !map.mask[i],
+        };
+      });
     const pinAt = (x: number, y: number, side: number, p: RadialPin, radius: number) => {
       const row = spec.northUp ? spec.ny - 1 - p.y : p.y;
       const px = x - side / 2 + ((p.x + 0.5) / spec.nx) * side;
@@ -341,7 +370,17 @@ export function RadialView({
         g.fillRect(t.x - tw / 2 - 3, t.y - th / 2 - 3, tw + 6, th + 6);
         g.restore();
       }
-      g.drawImage(images.tiles[t.index].canvas, t.x - tw / 2, t.y - th / 2, tw, th);
+      if (pattern)
+        drawMap(
+          t,
+          images.tiles[t.index].mix,
+          t.x - tw / 2,
+          t.y - th / 2,
+          tw,
+          th,
+          Math.max(3.5, tw / 9),
+        );
+      else g.drawImage(images.tiles[t.index].canvas, t.x - tw / 2, t.y - th / 2, tw, th);
       g.strokeStyle = big ? ink : line;
       g.strokeRect(t.x - tw / 2 - 0.5, t.y - th / 2 - 0.5, tw + 1, th + 1);
       g.font = big ? `600 11px ${mono}` : `9px ${mono}`;
@@ -353,14 +392,16 @@ export function RadialView({
       }
       g.fillStyle = big ? ink : soft;
       g.fillText(t.label, t.x, t.y + th / 2 + (big ? 15 : 10));
-      if (spec.arrangement === 'map') for (const p of pins) pinAt(t.x, t.y, tw, p, big ? 4 : 2.2);
+      if (spec.arrangement === 'map' && spec.geographic !== false)
+        for (const p of pins) pinAt(t.x, t.y, tw, p, big ? 4 : 2.2);
     };
     for (const t of ordered) if (t.grow <= 1.05) drawTile(t);
     g.globalAlpha = 1;
     // Centre map.
     const w = centerSide,
       h = centerSide * aspect;
-    g.drawImage(images.center.canvas, cx - w / 2, cy - h / 2, w, h);
+    if (pattern) drawMap(spec.center, null, cx - w / 2, cy - h / 2, w, h, Math.max(5, w / 26));
+    else g.drawImage(images.center.canvas, cx - w / 2, cy - h / 2, w, h);
     g.strokeStyle = soft;
     g.strokeRect(cx - w / 2 - 0.5, cy - h / 2 - 0.5, w + 1, h + 1);
     g.textAlign = 'center';
@@ -375,7 +416,7 @@ export function RadialView({
       g.fillStyle = colour;
       g.fillText(text, cx, cy + h / 2 + dy);
     }
-    for (const p of pins) pinAt(cx, cy, centerSide, p, 5);
+    if (spec.geographic !== false) for (const p of pins) pinAt(cx, cy, centerSide, p, 5);
 
     for (const t of ordered) if (t.grow > 1.05) drawTile(t);
 
@@ -420,7 +461,7 @@ export function RadialView({
       const v = map.grid[row * spec.nx + col];
 
       return {
-        cell: { x: col, y: row },
+        cell: spec.geographic === false ? null : { x: col, y: row },
         text: `${label} · ${Number.isFinite(v) ? `${formatValue(v)} ${spec.units}` : 'no data'}`,
       };
     };

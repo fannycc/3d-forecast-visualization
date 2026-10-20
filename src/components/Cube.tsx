@@ -141,6 +141,7 @@ export function Cube({
   clock = null,
   beams = [],
   theme = 'light',
+  pattern = false,
   pulse,
   onReliefInfo,
   view = 'cube',
@@ -155,6 +156,8 @@ export function Cube({
   /** Changing this key plays a short spring deformation of the whole cube. */
   pulse?: string;
   theme?: 'light' | 'dark';
+  /** Draw values as ink glyphs on paper instead of colours. */
+  pattern?: boolean;
   volume: DisplayVolume;
   selectionStyle?: 'isolate' | 'paint';
   clock?: ClockSpec | null;
@@ -1064,6 +1067,7 @@ export function Cube({
             selectionStyle,
             muted: theme === 'dark' ? [0.16, 0.18, 0.21] : [0.86, 0.88, 0.9],
             hideMissing: isMemberRank(volume.timeUnits),
+            pattern,
             onReady: reportReady,
             pickable: true,
             coordinateSystem: COORDINATE_SYSTEM.CARTESIAN,
@@ -1078,6 +1082,7 @@ export function Cube({
             selectionStyle,
             muted: theme === 'dark' ? [0.16, 0.18, 0.21] : [0.86, 0.88, 0.9],
             hideMissing: isMemberRank(volume.timeUnits),
+            pattern,
             regionOffset,
             slices,
             range,
@@ -1274,6 +1279,7 @@ export function Cube({
       overlays,
       ink,
       theme,
+      pattern,
       selectionStyle,
       volume,
       size,

@@ -93,3 +93,20 @@ export function loadLinework() {
       throw error;
     }));
 }
+
+let coastlines: Promise<Segment[]> | undefined;
+
+/** Country outlines only (coasts and national borders), for maps that need light context. */
+export function loadCoastlines() {
+  return (coastlines ??= fetch('/countries.geojson')
+    .then(async (response) => {
+      if (!response.ok) throw new Error('Coastlines could not be loaded.');
+      const data = (await response.json()) as { features: { geometry: Geometry }[] };
+
+      return data.features.flatMap((feature) => boundarySegments(feature.geometry));
+    })
+    .catch((error) => {
+      coastlines = undefined;
+      throw error;
+    }));
+}

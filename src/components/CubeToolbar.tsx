@@ -1,9 +1,20 @@
 import { useState, type ReactNode } from 'react';
-import { Box, CircleDot, Hand, Minus, Mountain, Plus, Rotate3d, Slice, Type } from 'lucide-react';
+import {
+  Box,
+  CircleDot,
+  Cylinder,
+  Hand,
+  Minus,
+  Mountain,
+  Plus,
+  Rotate3d,
+  Slice,
+  Type,
+} from 'lucide-react';
 import { Button, Popover, Tip } from './ui/primitives';
 
 export type CubeMode = 'orbit' | 'pan' | 'slice';
-export type ViewMode = 'cube' | 'radial';
+export type ViewMode = 'cube' | 'radial' | 'tunnel';
 
 const modes = [
   { id: 'orbit', label: 'Orbit', hint: 'Drag to rotate the cube', Icon: Rotate3d },
@@ -48,7 +59,7 @@ export function CubeToolbar({
     onRelief?.();
     setReliefOpen(!showRelief);
   };
-  const flat = view === 'radial';
+  const flat = view !== 'cube';
   const actions: {
     label: string;
     hint: string;
@@ -71,8 +82,16 @@ export function CubeToolbar({
       label: 'Flat view',
       hint: 'Show the runs as a flat radial view',
       content: <CircleDot size={15} aria-hidden="true" />,
-      pressed: flat,
+      pressed: view === 'radial',
       onClick: () => onView('radial'),
+      disabled: false,
+    },
+    {
+      label: 'Tunnel view',
+      hint: 'Fly through the forecast (experimental)',
+      content: <Cylinder size={15} aria-hidden="true" />,
+      pressed: view === 'tunnel',
+      onClick: () => onView('tunnel'),
       disabled: false,
     },
     ...modes.map(({ id, label, hint, Icon }, i) => ({

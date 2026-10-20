@@ -4489,3 +4489,133 @@ body,
   border: 1px solid var(--ink-faint);
   border-radius: 4px;
 }
+
+/* Timeline: one step back and forward, after play */
+.transport .step {
+  color: var(--ink-soft);
+}
+.transport .step:disabled {
+  opacity: 0.35;
+}
+
+/* Tunnel view: inside a tube painted with the forecast, in the app's light style */
+.tunnel-view {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+.tunnel-stage {
+  position: absolute;
+  inset: 0 0 24px;
+}
+.tunnel-canvas {
+  display: block;
+}
+.tunnel-hint {
+  position: absolute;
+  left: 16px;
+  bottom: 6px;
+  margin: 0;
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+@container (max-width: 880px) {
+  .app-shell .camera-tools[data-view='tunnel'] {
+    left: auto;
+    right: 14px;
+    transform: none;
+    max-width: calc(100% - 196px);
+    overflow-x: auto;
+  }
+  .tunnel-hint {
+    display: none;
+  }
+}
+
+.tunnel-view .tunnel-mode {
+  z-index: 5;
+}
+.tunnel-hint {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--panel, #fff);
+}
+.tunnel-hint {
+  left: 14px;
+  bottom: 4px;
+}
+.tunnel-controls {
+  position: absolute;
+  z-index: 5;
+  top: 14px;
+  left: 14px;
+  display: grid;
+  gap: 6px;
+  width: 240px;
+}
+.tunnel-controls .radial-arrangement {
+  position: static;
+  width: 100%;
+}
+@container (max-width: 880px) {
+  .app-shell .camera-tools[data-view='tunnel'] {
+    max-width: calc(100% - 270px);
+  }
+}
+
+/* Timeline: while playing, the date rides above the moving marker */
+.transport-track {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
+.transport-track .slider {
+  flex: 1;
+}
+.playhead-tooltip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  /* Centred on the marker, but kept inside the track at both ends. */
+  transform: translateX(calc(var(--f, 0.5) * -100%));
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel, #fff);
+  color: var(--ink-soft);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.08);
+}
+
+/* Patterned theme: ink glyphs on paper instead of colours; everything else is light */
+:root[data-theme='pattern'] {
+  --ink: #151515;
+  --ink-soft: #4a463e;
+  --ink-faint: #8f897b;
+  --ground: #f1ede2;
+  --panel: #f7f4ec;
+  --panel-raised: #ebe6d9;
+  --line: #ddd6c6;
+  --border: #ddd6c6;
+  --green: #151515;
+  --cyan: #151515;
+  --daylight: linear-gradient(180deg, #f1ede2 0%, #ebe6d9 100%);
+}
+:root[data-theme='pattern'] body,
+:root[data-theme='pattern'] .app-shell {
+  background: #f1ede2;
+}
+.pattern-ramp {
+  background-repeat: repeat-x;
+  background-size: auto 100%;
+  image-rendering: auto;
+}
+:root[data-theme='pattern'] .color-bar {
+  height: 18px;
+  border-radius: 2px;
+}
+:root[data-theme='pattern'] .cube-loader {
+  filter: grayscale(1) contrast(1.4);
+}

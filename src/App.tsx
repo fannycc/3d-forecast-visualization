@@ -14,7 +14,7 @@ import {
   refreshForecastPoints,
   type ForecastPoint,
 } from './analysis/points';
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo, lazy, Suspense } from 'react';
 import {
   PanelLeft,
   Plus,
@@ -27,6 +27,9 @@ import {
   X,
   Sun,
   Moon,
+  Hash,
+  SkipBack,
+  SkipForward,
 } from 'lucide-react';
 import { Command } from 'cmdk';
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels';
@@ -36,6 +39,7 @@ import { coordinateDate, coordinateIndices, validateExtent } from './engine/coor
 import type { Extent, Metadata, Metrics, Volume, OpenRequest } from './engine/types';
 import { Cube } from './components/Cube';
 import { AnalysisControls } from './components/AnalysisControls';
+import type { EventRule } from './analysis/events';
 import { applySQL, useMosaicState } from './analysis/state';
 import { useAnalysis } from './analysis/useAnalysis';
 import { TimeSeries } from './components/LinkedViews';
@@ -65,6 +69,13 @@ import { CubeToolbar, type ViewMode } from './components/CubeToolbar';
 import { RadialView } from './components/RadialView';
 import { RegionPicker } from './components/RegionPicker';
 import { CubeLoader } from './components/CubeLoader';
+import { patternLegend } from './render/patterns';
+import { validTimes as stepTimes } from './analysis/useNormals';
+
+/** The experimental patterned theme ships only where it is switched on. */
+const PATTERN_THEME = import.meta.env.DEV || import.meta.env.VITE_PATTERN === 'on';
+
+const TunnelView = lazy(() => import('./tunnel/TunnelView'));
 import { radialSpec } from './story/radial';
 
 /** The story opens on an ensemble so every question can be answered. */
@@ -189,6 +200,8 @@ export default function App() {
     [playing, setPlaying] = useState(false),
     [reset, setReset] = useState(0);
 
+  /** The persistent-event rule last searched for, to apply to every run in the flat view. */
+  const [eventRule, setEventRule] = useState<EventRule | null>(null);
   const [regionFailure, setRegionFailure] = useState<{ message: string } | null>(null);
 
   useEffect(() => {
@@ -201,19 +214,26 @@ export default function App() {
   const [display, setDisplayState] = useState<Display>(defaultDisplay),
     [uncertaintyMode, setUncertaintyMode] = useState<UncertaintyMode>('suppress'),
     [uncertaintyScale, setUncertaintyScale] = useState(1);
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+  /** light (default), dark, or pattern: ink glyphs on paper instead of colours. The
+   * patterned theme is still experimental: local development only unless VITE_PATTERN=on. */
+  const [themeMode, setTheme] = useState<'light' | 'dark' | 'pattern'>(() => {
     try {
-      return localStorage.getItem('zarr-sql-views-theme') === 'dark' ? 'dark' : 'light';
+      const saved = localStorage.getItem('zarr-sql-views-theme');
+
+      return saved === 'dark' || (saved === 'pattern' && PATTERN_THEME) ? saved : 'light';
     } catch {
       return 'light';
     }
   });
+  const patterned = themeMode === 'pattern';
+  /** Everything except the colour ramp treats the patterned theme as light. */
+  const theme: 'light' | 'dark' = themeMode === 'dark' ? 'dark' : 'light';
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.theme = themeMode;
     try {
-      localStorage.setItem('zarr-sql-views-theme', theme);
+      localStorage.setItem('zarr-sql-views-theme', themeMode);
     } catch {}
-  }, [theme]);
+  }, [themeMode]);
 
   const [section, setSection] = useState<SectionId>('forecast'),
     [jump, setJump] = useState<{ id: SectionId; n: number } | null>(null),
@@ -576,7 +596,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!playing || !volume) return;
+    // The tunnel flies continuously and reports its own steps.
+    if (!playing || !volume || viewMode === 'tunnel') return;
 
     const timer = setInterval(
       () => setSlices((s) => [s[0], s[1], (s[2] + 1) % volume.shape[0]]),
@@ -584,7 +605,7 @@ export default function App() {
     );
 
     return () => clearInterval(timer);
-  }, [playing, volume]);
+  }, [playing, volume, viewMode]);
 
   useEffect(() => {
     if (!volume) return;
@@ -911,6 +932,7 @@ export default function App() {
             mask: analysis.matches?.mask ?? null,
             muted: theme === 'dark' ? [0.16, 0.18, 0.21] : [0.86, 0.88, 0.9],
             arrangement,
+            eventRule: analysis.matches ? eventRule : null,
           })
         : null,
     [
@@ -933,6 +955,7 @@ export default function App() {
       analysis.matches,
       theme,
       arrangement,
+      eventRule,
     ],
   );
 
@@ -955,6 +978,35 @@ export default function App() {
         ? `Loading new region · ${blocks[1]} of ${blocks[2]} blocks`
         : 'Loading new region…'
       : '';
+  /** Valid times of every step, for dates in the tunnel. */
+  const tunnelTimes = useMemo(() => {
+    if (!meta || !volume) return null;
+    try {
+      return stepTimes(meta, volume);
+    } catch {
+      return null;
+    }
+  }, [meta, volume]);
+  /** Where the playhead sits along the timeline, 0–1. */
+  const playheadFraction = volume
+    ? (volume.times[slices[2]] - volume.times[0]) /
+      Math.max(1e-9, volume.times.at(-1)! - volume.times[0])
+    : 0;
+  /** The date at the playhead, shown above the timeline marker while playing. */
+  const playheadDate = (() => {
+    const at = tunnelTimes?.[slices[2]];
+    if (at === undefined || !volume)
+      return volume ? timeLabel(volume.times[slices[2]], volume.timeUnits) : '';
+
+    return `${new Date(at * 1000).toLocaleString('en-GB', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      timeZone: 'UTC',
+    })} UTC`;
+  })();
   /** Pinned points, as cells of the loaded region, for the flat view. */
   const radialPins = useMemo(
     () =>
@@ -1124,6 +1176,25 @@ export default function App() {
                               {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
                             </Button>
                           </Tip>
+                          {PATTERN_THEME && (
+                            <Tip
+                              label={patterned ? 'Use colours' : 'Use patterns instead of colours'}
+                            >
+                              <Button
+                                variant="ghost"
+                                className="icon"
+                                aria-label={
+                                  patterned ? 'Use colours' : 'Use patterns instead of colours'
+                                }
+                                aria-pressed={patterned}
+                                onClick={() =>
+                                  setTheme((t) => (t === 'pattern' ? 'light' : 'pattern'))
+                                }
+                              >
+                                <Hash size={15} />
+                              </Button>
+                            </Tip>
+                          )}
                           <Button variant="ghost" onClick={() => open({ url: AIFS })}>
                             <FolderOpen size={15} />
                             <span>Open dataset</span>
@@ -1286,7 +1357,13 @@ export default function App() {
                                 </div>
                                 <div
                                   className="color-bar"
-                                  style={{ background: gradient(palette) }}
+                                  style={
+                                    patterned
+                                      ? {
+                                          background: `url(${patternLegend()}) left / 100% 100% no-repeat`,
+                                        }
+                                      : { background: gradient(palette) }
+                                  }
                                 />
                                 <div className="legend-numbers">
                                   <span>
@@ -1449,7 +1526,13 @@ export default function App() {
                             <div className="legend story-legend">
                               <div
                                 className="color-bar"
-                                style={{ background: gradient('balance') }}
+                                style={
+                                  patterned
+                                    ? {
+                                        background: `url(${patternLegend()}) left / 100% 100% no-repeat`,
+                                      }
+                                    : { background: gradient('balance') }
+                                }
                               />
                               <div className="legend-numbers">
                                 <span>
@@ -1498,6 +1581,7 @@ export default function App() {
                             </p>
                           )}
                           <AnalysisControls
+                            onRule={setEventRule}
                             part="events"
                             volume={displayVolume}
                             analysis={analysis}
@@ -1584,7 +1668,71 @@ export default function App() {
                             )}
                           </div>
                         )}
-                        {viewMode === 'radial' && radial ? (
+                        {viewMode === 'tunnel' && volume && displayVolume ? (
+                          <>
+                            <CubeToolbar
+                              view="tunnel"
+                              onView={setViewMode}
+                              mode="orbit"
+                              onMode={() => {}}
+                              onReset={() => {}}
+                              onZoom={() => {}}
+                              zoom={0}
+                              showLabels={false}
+                              onLabels={() => {}}
+                              showRelief={false}
+                              reliefMenu={null}
+                            />
+                            <Suspense
+                              fallback={
+                                <div className="region-loading" role="status">
+                                  <div className="loading-state">
+                                    <CubeLoader size={64} />
+                                    <div className="loading-caption">
+                                      <span>Opening the tunnel</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              }
+                            >
+                              <TunnelView
+                                section={section}
+                                forecast={volume}
+                                volume={displayVolume}
+                                uncertainty={
+                                  ((section === 'certainty' && !isTrust) || section === 'normal') &&
+                                  (display.statistic === 'mean' || display.statistic === 'median')
+                                    ? { mode: uncertaintyMode, scale: uncertaintyScale }
+                                    : null
+                                }
+                                mask={cubeMask}
+                                maskLabel={
+                                  isTrust
+                                    ? 'still within the trust horizon'
+                                    : section === 'sql'
+                                      ? 'matching the SQL filter'
+                                      : 'in the event'
+                                }
+                                muted={theme === 'dark' ? [0.16, 0.18, 0.21] : [0.86, 0.88, 0.9]}
+                                validTimes={tunnelTimes}
+                                pattern={patterned}
+                                palette={palette}
+                                range={range}
+                                index={Math.min(slices[2], displayVolume.shape[0] - 1)}
+                                onIndex={(i) => changeSlice(2, i)}
+                                playing={playing}
+                                onPlaying={setPlaying}
+                                pins={radialPins}
+                                onPick={(x, y) => {
+                                  setSelectedForecasts((previous) =>
+                                    addForecastPoint(previous, displayVolume, x, y),
+                                  );
+                                  setLinked(true);
+                                }}
+                              />
+                            </Suspense>
+                          </>
+                        ) : viewMode === 'radial' && radial ? (
                           <>
                             <CubeToolbar
                               view="radial"
@@ -1600,6 +1748,7 @@ export default function App() {
                               reliefMenu={null}
                             />
                             <RadialView
+                              pattern={patterned}
                               spec={radial}
                               pulse={`${section}|${certaintyView}`}
                               pins={radialPins}
@@ -1645,6 +1794,7 @@ export default function App() {
                             selectionStyle={isTrust ? 'paint' : selectionStyle}
                             clock={clock}
                             theme={theme}
+                            pattern={patterned}
                             pulse={`${section}|${certaintyView}`}
                             view={viewMode}
                             onView={setViewMode}
@@ -1787,34 +1937,74 @@ export default function App() {
                     >
                       {playing ? <Pause size={15} /> : <Play size={15} />}
                     </Button>
+                    <Button
+                      className="icon step"
+                      variant="ghost"
+                      aria-label="Previous forecast time"
+                      disabled={slices[2] <= 0}
+                      onClick={() => {
+                        setPlaying(false);
+                        changeSlice(2, Math.max(0, slices[2] - 1));
+                      }}
+                    >
+                      <SkipBack size={14} />
+                    </Button>
+                    <Button
+                      className="icon step"
+                      variant="ghost"
+                      aria-label="Next forecast time"
+                      disabled={slices[2] >= volume.times.length - 1}
+                      onClick={() => {
+                        setPlaying(false);
+                        changeSlice(2, Math.min(volume.times.length - 1, slices[2] + 1));
+                      }}
+                    >
+                      <SkipForward size={14} />
+                    </Button>
                     <span className="lead-label">
                       {timeLabel(volume.times[slices[2]], volume.timeUnits)}
                     </span>
-                    <Slider
-                      label={
-                        isWinterTime(volume.timeUnits) ? 'Winter playback' : 'Forecast playback'
-                      }
-                      value={volume.times[slices[2]] - volume.times[0]}
-                      max={volume.times.at(-1)! - volume.times[0]}
-                      step={0.001}
-                      onStep={(direction) =>
-                        changeSlice(
-                          2,
-                          Math.max(0, Math.min(volume.times.length - 1, slices[2] + direction)),
-                        )
-                      }
-                      onChange={(v) => {
-                        const target = volume.times[0] + v;
-                        let closest = 0;
+                    <div className="transport-track">
+                      <Slider
+                        label={
+                          isWinterTime(volume.timeUnits) ? 'Winter playback' : 'Forecast playback'
+                        }
+                        value={volume.times[slices[2]] - volume.times[0]}
+                        max={volume.times.at(-1)! - volume.times[0]}
+                        step={0.001}
+                        onStep={(direction) =>
+                          changeSlice(
+                            2,
+                            Math.max(0, Math.min(volume.times.length - 1, slices[2] + direction)),
+                          )
+                        }
+                        onChange={(v) => {
+                          const target = volume.times[0] + v;
+                          let closest = 0;
 
-                        volume.times.forEach((t, i) => {
-                          if (Math.abs(t - target) < Math.abs(volume.times[closest] - target))
-                            closest = i;
-                        });
+                          volume.times.forEach((t, i) => {
+                            if (Math.abs(t - target) < Math.abs(volume.times[closest] - target))
+                              closest = i;
+                          });
 
-                        changeSlice(2, closest);
-                      }}
-                    />
+                          changeSlice(2, closest);
+                        }}
+                      />
+                      {playing && (
+                        <span
+                          className="playhead-tooltip"
+                          role="status"
+                          style={
+                            {
+                              left: `${playheadFraction * 100}%`,
+                              '--f': playheadFraction,
+                            } as React.CSSProperties
+                          }
+                        >
+                          {playheadDate}
+                        </span>
+                      )}
+                    </div>
                     <span className="end-label">
                       {timeLabel(volume.times.at(-1)!, volume.timeUnits)}
                     </span>

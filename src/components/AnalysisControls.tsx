@@ -18,6 +18,7 @@ export function AnalysisControls({
   part,
   selectionStyle,
   onSelectionStyle,
+  onRule,
 }: {
   volume: Volume;
   analysis: Analysis;
@@ -28,6 +29,9 @@ export function AnalysisControls({
   part: 'events' | 'sql';
   selectionStyle: 'isolate' | 'paint';
   onSelectionStyle: (style: 'isolate' | 'paint') => void;
+  /** The event rule behind the current search (null once cleared), so views can apply it to
+   * every run. */
+  onRule?: (rule: EventRule | null) => void;
 }) {
   const { state, runtime, matches, status, error } = analysis;
   const unit = volume.quantity.units;
@@ -52,6 +56,7 @@ export function AnalysisControls({
 
   const reset = () => {
     generation.current++;
+    onRule?.(null);
     applySQL(state, null);
     setRunning(false);
     setQueryError('');
@@ -114,7 +119,8 @@ export function AnalysisControls({
                   : 'Preparing the query engine for this view…'
           }
           onRetry={!runtime && error && !status ? analysis.retry : undefined}
-          onFind={(text) => {
+          onFind={(text, rule) => {
+            onRule?.(rule);
             setQuery(text);
             run(text);
           }}
@@ -276,7 +282,7 @@ function EventBuilder({
   /** Why the search cannot run right now, shown beside the button. */
   reason: string;
   onRetry?: () => void;
-  onFind: (sql: string) => void;
+  onFind: (sql: string, rule: EventRule) => void;
 }) {
   const columns = [
     'value',
@@ -381,7 +387,7 @@ function EventBuilder({
         onClick={() => {
           try {
             setError('');
-            onFind(eventSQL({ ...rule, column }));
+            onFind(eventSQL({ ...rule, column }), { ...rule, column });
           } catch (e) {
             setError((e as Error).message);
           }

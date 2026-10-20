@@ -13,6 +13,8 @@ const uniformBlock = `uniform volumeUniforms {
  float paintActive;
  vec3 muted;
  float hideMissing;
+ float patternMode;
+ float patternSize;
 } volume;`;
 
 export const volumeModule = {
@@ -34,6 +36,8 @@ export const volumeModule = {
     paintActive: 'f32',
     muted: 'vec3<f32>',
     hideMissing: 'f32',
+    patternMode: 'f32',
+    patternSize: 'f32',
   },
 } as const;
 
@@ -111,6 +115,7 @@ uniform sampler2D paletteTexture;
 uniform sampler3D selectionTexture;
 uniform sampler2D coordinatesTexture;
 uniform sampler3D uncertaintyTexture;
+uniform sampler2D patternTexture;
 in vec3 vCoord;
 flat in int cellId;
 out vec4 fragColor;
@@ -155,6 +160,14 @@ void main(){
  if(volume.paintActive>.5 && picking.isActive<.5 && texelFetch(selectionTexture,index,0).r<.5){
    float g=dot(fragColor.rgb,vec3(.2126,.7152,.0722));
    fragColor.rgb=mix(vec3(g),volume.muted,.72);
+ }
+ // Patterned theme: a glyph per screen cell, chosen by the value (7 steps of ink).
+ if(volume.patternMode>.5 && picking.isActive<.5){
+   float levels=7.;
+   float level=missing?0.:min(levels-1.,floor(scaled*levels));
+   vec2 cell=fract(gl_FragCoord.xy/volume.patternSize);
+   float faint=(volume.paintActive>.5 && texelFetch(selectionTexture,index,0).r<.5)?1.:0.;
+   fragColor.rgb=texture(patternTexture,vec2((level+cell.x)/levels,(faint+1.-cell.y)/2.)).rgb;
  }
  DECKGL_FILTER_COLOR(fragColor,geometry);
  if(picking.isActive<.5) {

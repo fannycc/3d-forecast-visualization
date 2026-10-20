@@ -34,3 +34,41 @@ SELECT hits.cell_id, hits.longitude, hits.latitude, hits.forecast_hour, hits.${r
 FROM hits JOIN runs USING (x_index, y_index, run)
 WHERE runs.duration_h >= ${rule.minHours}`;
 }
+
+/** The same rule as eventSQL, on one array in [time, y, x] order, for checking it against
+ * individual runs: runs of consecutive steps that meet the condition (strictly above or
+ * below), broken by a failing or missing sample, kept when they last at least minHours from
+ * first to last sample. Returns the matching cells and, per place, the longest event's
+ * duration in hours (NaN where there is none). */
+export function eventCells(
+  values: ArrayLike<number>,
+  shape: [number, number, number],
+  hours: number[],
+  rule: Pick<EventRule, 'direction' | 'threshold' | 'minHours'>,
+) {
+  const [nt, ny, nx] = shape;
+  const plane = ny * nx;
+  const mask = new Uint8Array(nt * plane);
+  const longest = new Float32Array(plane).fill(NaN);
+  const hit = (v: number) => (rule.direction === 'above' ? v > rule.threshold : v < rule.threshold);
+  for (let i = 0; i < plane; i++) {
+    let start = -1;
+    const close = (end: number) => {
+      const duration = hours[end] - hours[start];
+      if (duration >= rule.minHours) {
+        for (let t = start; t <= end; t++) mask[t * plane + i] = 1;
+        if (!(longest[i] >= duration)) longest[i] = duration;
+      }
+      start = -1;
+    };
+    for (let t = 0; t < nt; t++) {
+      const v = values[t * plane + i];
+      if (Number.isFinite(v) && hit(v)) {
+        if (start < 0) start = t;
+      } else if (start >= 0) close(t - 1);
+    }
+    if (start >= 0) close(nt - 1);
+  }
+
+  return { mask, longest };
+}
